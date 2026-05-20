@@ -9,13 +9,13 @@ my $env = do {
     local $/;
     <$fh>;
 };
-like( $env, qr/^VERSION=0\.13$/m, '.env stores skill version' );
+like( $env, qr/^VERSION=0\.14$/m, '.env stores skill version' );
 
 my $changes = do {
     open my $fh, '<', 'Changes' or die $!;
     local $/;
     <$fh>;
 };
-like( $changes, qr/^0\.13 2026-05-20$/m, 'Changes records current version' );
+like( $changes, qr/^0\.14 2026-05-20$/m, 'Changes records current version' );
 
 done_testing;

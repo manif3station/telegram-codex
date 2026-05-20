@@ -42,10 +42,11 @@ The installed plugin exposes a stdio MCP server with tools for:
 
 The skill itself also exposes an always-on listener command that keeps a per-Codex-session Telegram inbox ledger and persistent update offset.
 If the offset file is missing, the listener now recovers the next offset from the inbox ledger and skips stale returned updates older than that offset so old Telegram messages are not re-acknowledged again.
+It also skips any Telegram update whose `update_id` is already present in the session inbox ledger, which blocks slow duplicate replies if a stale listener is still around.
 Passing `0` as the listener cycle count now explicitly means "stay running forever" for the managed startup path and direct listener use.
 The listener is passive by default and does not send a placeholder bot reply unless you pass an explicit reply text on the command line.
 `telegram-codex.start` is the managed two-way path and launches the listener in active Codex-session reply mode instead of placeholder reply mode.
-That managed startup path now execs the skill-owned `cli/listen` directly, so the recorded listener pid matches the real resident listener process.
+That managed startup path now execs the skill-owned `cli/listen` directly, reuses the same listener for the same session, and keeps the recorded listener pid matched to the real resident listener process.
 
 ## Developer Dashboard Feature Added
 
@@ -89,6 +90,7 @@ The managed wrapper hands off into `~/.developer-dashboard/cli/codex`, and `tele
 - preserves the original saved-session resume mapping from `TICKET_REF`
 - starts the Telegram listener automatically when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CODEX_ENABLE_AUTOSTART=1` are available
 - starts the skill-owned `cli/listen` process directly, without an extra nested `dashboard telegram-codex.listen` wrapper process
+- reuses the existing listener for the same session instead of starting a duplicate
 - routes inbound Telegram text messages back into the active Codex session and sends the Codex-generated reply text back to Telegram
 - keeps reply-send failures from replaying the same Telegram update forever by still advancing the stored offset
 - survives transient Telegram `getUpdates` transport failures instead of dropping the listener immediately

@@ -1,3 +1,12 @@
+0.14 2026-05-20
+    - made managed listener startup `exec` the real `cli/listen` process so
+      one session keeps one actual listener pid
+    - added session-aware running-listener detection so managed startup can
+      reuse an existing listener instead of spawning a duplicate for the same
+      session
+    - blocked duplicate Telegram replies by skipping any update whose
+      `update_id` is already present in the session inbox ledger
+
 0.13 2026-05-20
     - made managed startup exec the skill-owned `cli/listen` directly instead
       of launching the listener through a nested `dashboard telegram-codex.listen`

@@ -352,6 +352,7 @@ sub execute_listen {
         for my $update (@updates) {
             my $update_id = $update->{update_id};
             next if defined $offset && defined $update_id && $update_id < $offset;
+            next if defined $update_id && $self->inbox_contains_update_id( $paths->{inbox_file}, $update_id );
             my $summary = $self->summarise_update($update);
             $self->append_inbox_entry( $paths->{inbox_file}, $summary );
             $processed++;
@@ -620,8 +621,9 @@ sub start_listener_if_needed {
         $existing_pid =~ s/\s+\z//;
         if ( $existing_pid ne q{} && kill 0, $existing_pid ) {
             return {
-                listener_running   => 1,
+                listener_running    => 1,
                 listener_session_id => $session_id,
+                pid                 => $existing_pid,
                 %{$paths},
             };
         }
@@ -652,8 +654,7 @@ sub start_listener_if_needed {
         $ENV{TELEGRAM_CODEX_TARGET_SESSION_ID} = $options{codex_session_id} if defined $options{codex_session_id} && $options{codex_session_id} ne q{};
         my @command = ( $listener_command, 0, 30 );
         push @command, $options{reply_text} if defined $options{reply_text} && $options{reply_text} ne q{};
-        my $exit = system(@command);
-        exit( $exit == -1 ? 1 : ( $exit >> 8 ) );
+        exec { $listener_command } @command or die "Unable to exec $listener_command: $!"; # uncoverable statement
     }
 
     $self->write_text_file( $paths->{pid_file}, "$pid\n" );
@@ -955,6 +956,19 @@ sub recover_listener_offset_from_inbox {
     return undef;
 }
 
+sub inbox_contains_update_id {
+    my ( $self, $path, $target_update_id ) = @_;
+    return 0 if !defined $target_update_id || !-f $path;
+    my @lines = grep { defined $_ && $_ ne q{} } split /\n/, $self->read_text_file($path);
+    for my $line ( reverse @lines ) {
+        my $decoded = eval { decode_json($line) };
+        next if $@ || ref($decoded) ne 'HASH';
+        next if !defined $decoded->{update_id};
+        return 1 if $decoded->{update_id} == $target_update_id;
+    }
+    return 0;
+}
+
 sub managed_listener_mode {
     return 'codex-session';
 }
@@ -1105,7 +1119,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.13',
+        agent   => 'telegram-codex/0.14',
         timeout => 60,
     );
     return $ua;

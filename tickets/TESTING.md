@@ -71,6 +71,16 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 - Direct managed listener launch regression:
   - managed startup now launches the skill-owned `cli/listen` command directly instead of going back through a nested `dashboard telegram-codex.listen` process
   - this keeps `listener.pid` aligned with the real resident listener process
+- Single-listener and duplicate-update regressions:
+  - managed startup now reuses the same session listener instead of starting a second one
+  - the listener now skips any Telegram update already present in `listener.inbox.jsonl`
+- Docker functional gate for `DD-283`:
+  - `Files=6, Tests=243`
+  - `Result: PASS`
+- Docker covered gate for `DD-283`:
+  - `Files=6, Tests=243`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
 - Docker listener gate:
   - `Files=6, Tests=181`
   - listener state, session-specific runtime paths, inbox ledger, wrapper executability, thin-launcher generation, preserved saved-session resume mapping, no-backlog first auto-start behavior, `.env` discovery paths, and audio/video/voice reply eligibility are covered

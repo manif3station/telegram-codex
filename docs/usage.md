@@ -50,6 +50,7 @@ dashboard telegram-codex.start
 On the first auto-start with no stored listener offset, it primes to the latest Telegram update and waits for new messages instead of replying to older backlog items.
 After that first prime step, managed startup routes each new inbound Telegram text message through the active Codex session by resuming that session and asking Codex to generate the Telegram reply text within the live session context.
 Managed startup now launches the skill-owned `cli/listen` directly, so `listener.pid` follows the real resident listener process instead of an intermediate wrapper process.
+Managed startup also reuses the running listener for the same session instead of starting a duplicate.
 
 It also preserves the original saved-session resume logic from `~/.developer-dashboard/config/codex.json` when `TICKET_REF` points to a stored Codex session id.
 
@@ -134,6 +135,7 @@ dashboard telegram-codex.listen
 That command long-polls Telegram, appends inbound message summaries to `~/.telegram-codex/<session-id>/listener.inbox.jsonl`, and persists the next Telegram offset in `~/.telegram-codex/<session-id>/listener.offset`.
 If `listener.offset` is missing but the inbox ledger exists, the listener recovers the next offset from the latest inbox entry and skips any returned update older than that recovered offset.
 If the stored offset is older than the inbox-ledger offset, the listener now advances to the newer inbox-ledger offset instead of replaying duplicated older Telegram updates.
+If the session inbox ledger already contains a Telegram `update_id`, the listener skips that update instead of appending and replying to it again.
 Passing `0` as `MAX_CYCLES` means "stay running forever" instead of "stop after one cycle."
 By default it does not send a Telegram reply. It only captures inbound activity unless you pass an explicit reply text.
 Managed startup uses a different mode than direct `listen`: it resumes the active Codex session to generate Telegram replies instead of relying on a static reply string.

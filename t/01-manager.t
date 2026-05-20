@@ -469,18 +469,26 @@ sub new_manager {
 
 {
     my $home = tempdir( CLEANUP => 1 );
-    my $session_dir = File::Spec->catdir( $home, 'session-running-11' );
-    make_path($session_dir);
-    _write( File::Spec->catfile( $session_dir, 'listener.pid' ), "$$\n" );
+    my $skill_root = File::Spec->catdir( $home, 'skill-root' );
+    my $cli_dir = File::Spec->catdir( $skill_root, 'cli' );
+    make_path($cli_dir);
+    my $listen = File::Spec->catfile( $cli_dir, 'listen' );
+    _write( $listen, "#!/usr/bin/env perl\nsleep 30;\n" );
+    chmod 0755, $listen or die "Unable to chmod fake running listener: $!";
     my $manager = new_manager(
-        cwd  => $home,
-        home => $home,
-        env  => {
+        cwd        => $home,
+        home       => $home,
+        skill_root => $skill_root,
+        env        => {
             TELEGRAM_CODEX_RUNTIME_DIR => $home,
         },
     );
+    my $first = $manager->start_listener_if_needed('session-running-11');
     my $paths = $manager->start_listener_if_needed('session-running-11');
     is( $paths->{listener_running}, 1, 'start_listener_if_needed leaves an already-running session listener alone' );
+    is( $paths->{pid}, $first->{pid}, 'start_listener_if_needed reports the existing running session listener pid' );
+    kill 'TERM', $first->{pid};
+    waitpid $first->{pid}, 0;
 }
 
 {
@@ -520,7 +528,7 @@ sub new_manager {
     make_path($cli_dir);
     my $listener_log = File::Spec->catfile( $home, 'listener.exec.log' );
     my $listen = File::Spec->catfile( $cli_dir, 'listen' );
-    _write( $listen, "#!/bin/sh\nprintf '%s\\n' \"\$TELEGRAM_CODEX_LISTENER_MODE\" \"\$TELEGRAM_CODEX_TARGET_SESSION_ID\" \"\$0\" \"\$@\" > \"$listener_log\"\nexit 0\n" );
+    _write( $listen, "#!/bin/sh\nprintf '%s\\n' \"\$TELEGRAM_CODEX_LISTENER_MODE\" \"\$TELEGRAM_CODEX_TARGET_SESSION_ID\" \"\$0\" \"\$@\" > \"$listener_log\"\n" );
     chmod 0755, $listen or die "Unable to chmod fake listener: $!";
     my $manager = new_manager(
         cwd  => $home,
@@ -542,6 +550,31 @@ sub new_manager {
         <$fh>;
     };
     is( $exec_log, "codex-session\nsession-forked-22\n$listen\n0\n30\n", 'start_listener_if_needed can fork and exec the skill-owned listener command directly with managed session-response env' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $skill_root = File::Spec->catdir( $home, 'skill-root' );
+    my $cli_dir = File::Spec->catdir( $skill_root, 'cli' );
+    make_path($cli_dir);
+    my $listen = File::Spec->catfile( $cli_dir, 'listen' );
+    _write( $listen, "#!/usr/bin/env perl\nsleep 30;\n" );
+    chmod 0755, $listen or die "Unable to chmod sleeping fake listener: $!";
+    my $manager = new_manager(
+        cwd        => $home,
+        home       => $home,
+        skill_root => $skill_root,
+        env        => {
+            TELEGRAM_CODEX_RUNTIME_DIR => $home,
+        },
+    );
+    my $first = $manager->start_listener_if_needed('session-singleton-22');
+    ok( $first->{pid}, 'start_listener_if_needed returns a real listener pid for the first launch' );
+    my $second = $manager->start_listener_if_needed('session-singleton-22');
+    is( $second->{listener_running}, 1, 'start_listener_if_needed reuses the existing listener for the same session' );
+    is( $second->{pid}, $first->{pid}, 'start_listener_if_needed returns the same resident listener pid for the same session' );
+    kill 'TERM', $first->{pid};
+    waitpid $first->{pid}, 0;
 }
 
 {
@@ -1039,6 +1072,56 @@ EOF
     is( $result->{replied}, 0, 'prime-latest auto-start does not auto-reply by default after priming' );
     is( $manager->read_text_file( $result->{offset_file} ), "103\n", 'prime-latest auto-start advances offset after the new message cycle' );
     is( scalar @post_calls, 0, 'prime-latest auto-start only captures the new message unless a reply text is explicitly provided' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $session_dir = File::Spec->catdir( $runtime, 'session-skip-duplicate' );
+    mkdir $session_dir;
+    _write(
+        File::Spec->catfile( $session_dir, 'listener.inbox.jsonl' ),
+        encode_json(
+            {
+                update_id  => 500,
+                message_id => 21,
+                text       => 'already seen',
+            }
+        ) . "\n",
+    );
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'session-skip-duplicate',
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 500,
+                        message   => {
+                            message_id => 21,
+                            text       => 'already seen',
+                            chat       => { id => 88, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return { ok => JSON::XS::true, result => { message_id => 61 } };
+        },
+    );
+    my $result = $manager->execute_listen( 1, 0, 'listener ack' );
+    is( $result->{processed}, 0, 'listen skips an update already present in the session inbox ledger' );
+    is( $result->{replied}, 0, 'listen does not reply again for an update already present in the session inbox ledger' );
+    is( scalar @post_calls, 0, 'listen suppresses duplicate reply sends for an already-recorded update' );
 }
 
 {
