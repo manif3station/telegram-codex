@@ -23,7 +23,7 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
   - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
 - Live Telegram proof on 2026-05-20:
   - `./cli/install` created the plugin under `~/.codex/.tmp/plugins/plugins/telegram-codex` and the mirror root when present
-  - `./cli/get-me` resolved bot `@jamesthexe_bot`
-  - `./cli/updates 0 10 0` returned the pending `/start` DM from chat `398296603`
+  - `./cli/get-me` resolved the configured bot identity successfully
+  - `./cli/updates 0 10 0` returned the pending `/start` private DM successfully
   - `./cli/auto-reply-start` replied successfully to that `/start`
-  - `./cli/reply 398296603 'telegram-codex end-to-end check passed'` sent a direct follow-up message successfully
+  - `./cli/reply <private-chat-id> 'telegram-codex end-to-end check passed'` sent a direct follow-up message successfully
