@@ -109,6 +109,8 @@ That applies to:
 - PDFs
 - other Telegram-hosted files
 
+The shipped `download` path and the managed collector-owned media reply path both use Telegram Bot API `getFile` query-string parameters correctly, so real Telegram photo and file downloads are expected to work in live runs.
+
 Do not claim a binary attachment was read unless it was downloaded first.
 
 ## What The Skill Can Send Back

@@ -12,6 +12,7 @@ use HTTP::Request::Common qw(GET POST);
 use JSON::XS qw(decode_json encode_json);
 use LWP::UserAgent;
 use MIME::Base64 qw(encode_base64);
+use URI;
 
 sub new {
     my ( $class, %args ) = @_;
@@ -1093,8 +1094,9 @@ sub telegram_get {
     if ( $self->{get_runner} ) {
         return $self->{get_runner}->( $method, $params || {} );
     }
-    my $url = $self->telegram_api_base . '/' . $method;
-    my $request = GET( $url, %{ $params || {} } );
+    my $url = URI->new( $self->telegram_api_base . '/' . $method );
+    $url->query_form( %{ $params || {} } ) if $params && %{ $params || {} };
+    my $request = GET( $url->as_string );
     my $response = $self->{ua}->request($request);
     die "Telegram GET failed for $method: " . $response->status_line . "\n" if !$response->is_success;
     my $payload = decode_json( $response->decoded_content );
@@ -1526,7 +1528,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.20',
+        agent   => 'telegram-codex/0.21',
         timeout => 60,
     );
     return $ua;

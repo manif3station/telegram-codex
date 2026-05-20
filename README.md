@@ -70,6 +70,7 @@ Attachment handling:
 - metadata is available directly in updates and collector processing
 - managed `dashboard telegram-codex.check-message <session-id>` now downloads inbound supported media into the session runtime before Codex replies
 - the Codex prompt receives `*_local_path=` lines for those downloaded files
+- direct `dashboard telegram-codex.download <FILE_ID>` and managed inbound-media downloads now use Telegram Bot API `getFile` query-string parameters correctly, so real photo and file downloads work in live runs
 
 ## Commands
 

@@ -102,6 +102,7 @@ dashboard telegram-codex.download <FILE_ID>
 Use that for photos, videos, audio, voice, PDFs, and other Telegram-hosted files whenever the actual content must be inspected.
 
 The managed `check-message` loop now performs that download step automatically for inbound supported media before Codex replies.
+The direct `download` command and the managed collector-owned media path both use Telegram Bot API `getFile` query-string parameters correctly, so real inbound Telegram photo and file downloads work in live runs.
 
 ## Send Replies
 

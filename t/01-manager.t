@@ -1999,6 +1999,10 @@ EOF
             ),
             TestResponse->new(
                 is_success      => 1,
+                decoded_content => encode_json( { ok => JSON::XS::true, result => { sent => JSON::XS::true } } ),
+            ),
+            TestResponse->new(
+                is_success      => 1,
                 decoded_content => encode_json( { ok => JSON::XS::true, result => { uploaded => JSON::XS::true } } ),
             ),
         ],
@@ -2018,12 +2022,20 @@ EOF
     is( $manager->telegram_api_base, 'https://api.telegram.org/botabc123', 'telegram_api_base builds bot API root' );
     is( $manager->telegram_file_base, 'https://api.telegram.org/file/botabc123', 'telegram_file_base builds file API root' );
     is( $manager->telegram_get('getMe')->{result}{id}, 1, 'telegram_get uses UA request path' );
+    is(
+        $manager->telegram_get( 'getFile', { file_id => 'photo-123', offset => 9 } )->{result}{sent},
+        1,
+        'telegram_get returns payload for parameterized GET requests',
+    );
     is( $manager->telegram_post( 'sendMessage', { chat_id => 9 } )->{result}{sent}, 1, 'telegram_post uses UA request path' );
     is( $manager->telegram_post_file( 'sendDocument', { chat_id => 9 }, { document => $doc } )->{result}{uploaded}, 1, 'telegram_post_file uses multipart request path' );
     is( $manager->telegram_download('files/doc.txt'), 'FILEDATA', 'telegram_download uses UA get path' );
     is( $ua->{requests}[0]->method, 'GET', 'telegram_get sends GET request' );
-    is( $ua->{requests}[1]->method, 'POST', 'telegram_post sends POST request' );
-    is( $ua->{requests}[2]->method, 'POST', 'telegram_post_file sends multipart POST request' );
+    like( $ua->{requests}[1]->uri->query, qr/(?:^|&)file_id=photo-123(?:&|$)/, 'telegram_get encodes file_id into the query string' );
+    like( $ua->{requests}[1]->uri->query, qr/(?:^|&)offset=9(?:&|$)/, 'telegram_get encodes numeric parameters into the query string' );
+    ok( !$ua->{requests}[1]->header('File-Id'), 'telegram_get does not mis-send file_id as a header' );
+    is( $ua->{requests}[2]->method, 'POST', 'telegram_post sends POST request' );
+    is( $ua->{requests}[3]->method, 'POST', 'telegram_post_file sends multipart POST request' );
     like( $ua->{gets}[0][0], qr{/file/botabc123/files/doc\.txt$}, 'telegram_download fetches file URL' );
 }
 

@@ -15,6 +15,16 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-288`:
+  - `Files=6, Tests=327`
+  - `Result: PASS`
+- Docker covered gate for `DD-288`:
+  - `Files=6, Tests=327`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Telegram GET request regression:
+  - Docker now proves `telegram_get()` encodes `file_id` and numeric parameters into the URL query string instead of mis-sending them as HTTP headers
+  - host verification with a real inbound Telegram photo `file_id` now succeeds through `dashboard telegram-codex.download <FILE_ID>` and returns the saved local file path plus byte count
 - Docker functional gate for `DD-287`:
   - `Files=6, Tests=323`
   - `Result: PASS`

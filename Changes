@@ -1,3 +1,13 @@
+0.21 2026-05-21
+    - fixed Telegram Bot API `getFile` requests to send query-string
+      parameters instead of mistaken HTTP headers so inbound photo, PDF,
+      audio, and other file downloads now work in both the public
+      `dashboard telegram-codex.download` command and the managed
+      collector-owned media reply path
+    - added Docker-verified TDD coverage proving `telegram_get` keeps
+      parameters in the URL query instead of mis-sending them as request
+      headers
+
 0.20 2026-05-20
     - made the managed collector-owned `check-message` worker download inbound
       photo, document, audio, video, and voice files into the session runtime
