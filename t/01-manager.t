@@ -49,6 +49,7 @@ sub new_manager {
     return Telegram::Codex::Manager->new(
         cwd             => $cwd,
         home            => $args{home} || $cwd,
+        skill_root      => $args{skill_root},
         env             => $args{env} || {},
         get_runner      => $args{get_runner},
         post_runner     => $args{post_runner},
@@ -204,6 +205,182 @@ sub new_manager {
 }
 
 {
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @get_calls;
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        get_runner => sub {
+            my ( $method, $params ) = @_;
+            push @get_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 30,
+                        message   => {
+                            message_id => 10,
+                            text       => 'hello',
+                            chat       => { id => 88, type => 'private' },
+                        },
+                    },
+                    {
+                        update_id => 31,
+                        message   => {
+                            message_id => 11,
+                            chat       => { id => 88, type => 'private' },
+                            document   => { file_id => 'doc-9', file_name => 'report.pdf' },
+                        },
+                    },
+                ],
+            } if @get_calls == 1;
+            return { ok => JSON::XS::true, result => [] };
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 200 + scalar @post_calls, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    my $result = $manager->execute_listen( 2, 0, 'listener ack' );
+    is( $result->{cycles}, 2, 'listen reports executed cycles' );
+    is( $result->{processed}, 2, 'listen processes inbound updates' );
+    is( $result->{replied}, 2, 'listen auto-replies to eligible messages' );
+    is( $result->{next_offset}, 32, 'listen reports next offset' );
+    is( $get_calls[0][1]{timeout}, 0, 'listen forwards poll timeout' );
+    ok( !exists $get_calls[0][1]{offset}, 'listen omits offset before state exists' );
+    is( $get_calls[1][1]{offset}, 32, 'listen resumes from persisted next offset on the next cycle' );
+    is( scalar @post_calls, 2, 'listen sends a reply per eligible inbound message' );
+    is( $post_calls[0][1]{reply_to_message_id}, 10, 'listen replies to original text message id' );
+    is( $post_calls[1][1]{reply_to_message_id}, 11, 'listen replies to original document message id' );
+    my $offset_file = File::Spec->catfile( $runtime, 'listener.offset' );
+    my $inbox_file  = File::Spec->catfile( $runtime, 'listener.inbox.jsonl' );
+    is( $manager->read_text_file($offset_file), "32\n", 'listen persists next offset to runtime state' );
+    my @entries = split /\n/, $manager->read_text_file($inbox_file);
+    is( scalar @entries, 2, 'listen appends inbound messages to inbox ledger' );
+    is( decode_json( $entries[1] )->{document}{file_name}, 'report.pdf', 'listen logs document metadata in inbox ledger' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    _write( File::Spec->catfile( $runtime, 'listener.offset' ), "50\n" );
+    my @get_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        get_runner => sub {
+            my ( $method, $params ) = @_;
+            push @get_calls, [ $method, $params ];
+            return { ok => JSON::XS::true, result => [] };
+        },
+        post_runner => sub {
+            die 'listen should not reply when no new updates are present';
+        },
+    );
+    my $result = $manager->execute_listen( 1, 0, 'listener ack' );
+    is( $result->{processed}, 0, 'listen handles empty cycles cleanly' );
+    is( $get_calls[0][1]{offset}, 50, 'listen resumes from stored offset on restart' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 77,
+                        message   => {
+                            message_id => 12,
+                            chat       => { id => 88, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        post_runner => sub {
+            push @post_calls, [@_];
+            return { ok => JSON::XS::true, result => { message_id => 1, chat => { id => 88 } } };
+        },
+    );
+    my $result = $manager->execute_listen( 1, 0, 'listener ack' );
+    is( $result->{processed}, 1, 'listen still logs non-replied updates' );
+    is( scalar @post_calls, 0, 'listen skips auto-reply for unsupported message kinds' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 81,
+                        message   => {
+                            message_id => 13,
+                            chat       => { id => 88, type => 'private' },
+                            audio      => { file_id => 'audio-2' },
+                        },
+                    },
+                    {
+                        update_id => 82,
+                        message   => {
+                            message_id => 14,
+                            chat       => { id => 88, type => 'private' },
+                            video      => { file_id => 'video-2' },
+                        },
+                    },
+                    {
+                        update_id => 83,
+                        message   => {
+                            message_id => 15,
+                            chat       => { id => 88, type => 'private' },
+                            voice      => { file_id => 'voice-2' },
+                        },
+                    },
+                ],
+            };
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return { ok => JSON::XS::true, result => { message_id => 50 + scalar @post_calls, chat => { id => $params->{chat_id} } } };
+        },
+    );
+    my $result = $manager->execute_listen( 1, 0, 'listener ack' );
+    is( $result->{processed}, 3, 'listen processes audio, video, and voice updates' );
+    is( scalar @post_calls, 3, 'listen replies to audio, video, and voice updates' );
+}
+
+{
     my $home = tempdir( CLEANUP => 1 );
     my $manager = new_manager(
         home => $home,
@@ -236,6 +413,35 @@ sub new_manager {
     is( $manager->resolve_path('~'), '/tmp/test-home', 'resolve_path expands bare tilde to home' );
     is( $manager->resolve_path('relative/path.txt'), 'relative/path.txt', 'resolve_path leaves plain paths unchanged' );
     is( $manager->basename('dir\\file.txt'), 'file.txt', 'basename normalizes windows separators' );
+}
+
+{
+    my $root = tempdir( CLEANUP => 1 );
+    my $project = File::Spec->catdir( $root, 'project', 'app' );
+    make_path($project);
+    _write( File::Spec->catfile( $root, '.env' ), "TELEGRAM_BOT_TOKEN=root-token\n" );
+    local $ENV{TELEGRAM_BOT_TOKEN} = q{};
+    my $manager = Telegram::Codex::Manager->new(
+        cwd  => $project,
+        home => $root,
+    );
+    is( $manager->resolve_token(), 'root-token', 'resolve_token discovers TELEGRAM_BOT_TOKEN from a parent project .env' );
+}
+
+{
+    my $root = tempdir( CLEANUP => 1 );
+    my $project = File::Spec->catdir( $root, 'project' );
+    my $skill_root = File::Spec->catdir( $root, 'skill-root' );
+    make_path($project);
+    make_path($skill_root);
+    _write( File::Spec->catfile( $skill_root, '.env' ), "TELEGRAM_BOT_TOKEN=skill-token\n" );
+    local $ENV{TELEGRAM_BOT_TOKEN} = q{};
+    my $manager = Telegram::Codex::Manager->new(
+        cwd        => $project,
+        home       => $root,
+        skill_root => $skill_root,
+    );
+    is( $manager->resolve_token(), 'skill-token', 'resolve_token falls back to skill-level .env when project .env is absent' );
 }
 
 {

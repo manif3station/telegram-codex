@@ -16,9 +16,11 @@ sub new {
     my ( $class, %args ) = @_;
     my $cwd = $args{cwd} || getcwd();
     my $home = defined $args{home} ? $args{home} : $ENV{HOME};
+    my $skill_root = defined $args{skill_root} ? $args{skill_root} : $class->_default_skill_root;
     my $self = bless {
         cwd                  => $cwd,
         home                 => $home,
+        skill_root           => $skill_root,
         stdout_fh            => $args{stdout_fh} || \*STDOUT,
         stderr_fh            => $args{stderr_fh} || \*STDERR,
         env                  => {},
@@ -39,6 +41,7 @@ sub main_reply            { return shift->_run_main( 'reply',            @_ ) }
 sub main_send_photo       { return shift->_run_main( 'send_photo',       @_ ) }
 sub main_send_document    { return shift->_run_main( 'send_document',    @_ ) }
 sub main_auto_reply_start { return shift->_run_main( 'auto_reply_start', @_ ) }
+sub main_listen           { return shift->_run_main( 'listen',           @_ ) }
 
 sub _run_main {
     my ( $class, $mode, @argv ) = @_;
@@ -198,6 +201,73 @@ sub execute_auto_reply_start {
     };
 }
 
+sub execute_listen {
+    my ( $self, @argv ) = @_;
+    die "Usage: dashboard telegram-codex.listen [MAX_CYCLES] [POLL_TIMEOUT] [REPLY_TEXT]\n" if @argv > 3;
+    my $max_cycles;
+    my $poll_timeout = 30;
+    if ( @argv && $argv[0] =~ /\A\d+\z/ ) {
+        $max_cycles = shift @argv;
+    }
+    if ( @argv && $argv[0] =~ /\A\d+\z/ ) {
+        $poll_timeout = shift @argv;
+    }
+    my $reply_text = @argv
+      ? join( q{ }, @argv )
+      : 'telegram-codex listener is live. Your message was received and queued for Codex.';
+
+    my $paths = $self->listener_paths;
+    make_path( $paths->{runtime_dir} ) if !-d $paths->{runtime_dir};
+    my $offset = $self->read_listener_offset( $paths->{offset_file} );
+    my $cycles = 0;
+    my $processed = 0;
+    my $replied = 0;
+
+    while (1) {
+        my %params = (
+            limit   => 20,
+            timeout => $poll_timeout,
+        );
+        $params{offset} = $offset if defined $offset;
+        my $result = $self->telegram_get( 'getUpdates', \%params );
+        my @updates = @{ $result->{result} || [] };
+        for my $update (@updates) {
+            my $summary = $self->summarise_update($update);
+            $self->append_inbox_entry( $paths->{inbox_file}, $summary );
+            $processed++;
+            my $message = $update->{message} || $update->{edited_message} || {};
+            my $chat_id = $message->{chat}{id};
+            if ( defined $chat_id && $self->update_needs_listener_reply($summary) ) {
+                $self->telegram_post(
+                    'sendMessage',
+                    {
+                        chat_id             => $chat_id,
+                        text                => $reply_text,
+                        reply_to_message_id => $message->{message_id},
+                    }
+                );
+                $replied++;
+            }
+        }
+        if (@updates) {
+            $offset = $updates[-1]{update_id} + 1;
+            $self->write_listener_offset( $paths->{offset_file}, $offset );
+        }
+        $cycles++;
+        last if defined $max_cycles && $cycles >= $max_cycles;
+    }
+
+    return {
+        mode       => 'listen',
+        cycles     => $cycles,
+        processed  => $processed,
+        replied    => $replied,
+        next_offset => $offset,
+        offset_file => $paths->{offset_file},
+        inbox_file  => $paths->{inbox_file},
+    };
+}
+
 sub plugin_targets {
     my ($self) = @_;
     my @targets;
@@ -260,7 +330,7 @@ sub scaffold_plugin {
 sub plugin_manifest {
     return {
         name        => 'telegram-codex',
-        version     => '0.1.0',
+        version     => '0.2.0',
         description => 'Local Codex Telegram MCP bridge installed by the telegram-codex DD skill.',
         author      => { name => 'Michael Vu' },
         homepage    => 'https://telegram.org/',
@@ -269,8 +339,8 @@ sub plugin_manifest {
         mcpServers  => './.mcp.json',
         interface   => {
             displayName      => 'Telegram Codex',
-            shortDescription => 'Poll and reply through Telegram Bot API',
-            longDescription  => 'Use a local Telegram Bot API bridge for Codex through a generated stdio MCP server.',
+            shortDescription => 'Poll, reply, and keep a Telegram listener active',
+            longDescription  => 'Use a local Telegram Bot API bridge for Codex through a generated stdio MCP server and a governed always-on listener command.',
             developerName    => 'Michael Vu',
             category         => 'Productivity',
             capabilities     => [ 'Interactive', 'Write' ],
@@ -313,6 +383,10 @@ Current mode:
 - auto-reply to `/start`
 
 The bot token is loaded from the plugin-local `.env` file.
+
+For immediate bot replies outside manual Codex polling, run the skill listener:
+
+- `dashboard telegram-codex.listen`
 EOF
 }
 
@@ -332,7 +406,7 @@ PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
 ENV_FILE = PLUGIN_ROOT / ".env"
 DOWNLOAD_ROOT = PLUGIN_ROOT / "downloads"
 SERVER_NAME = "telegram-codex-bot"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 PROTOCOL_VERSION = "2024-11-05"
 
 
@@ -808,6 +882,51 @@ sub telegram_file_base {
     return 'https://api.telegram.org/file/bot' . $self->resolve_token;
 }
 
+sub listener_paths {
+    my ($self) = @_;
+    my $runtime_dir = $self->resolve_path( $self->env_value('TELEGRAM_CODEX_RUNTIME_DIR') || '~/.telegram-codex' );
+    return {
+        runtime_dir => $runtime_dir,
+        offset_file => File::Spec->catfile( $runtime_dir, 'listener.offset' ),
+        inbox_file  => File::Spec->catfile( $runtime_dir, 'listener.inbox.jsonl' ),
+    };
+}
+
+sub read_listener_offset {
+    my ( $self, $path ) = @_;
+    return undef if !-f $path;
+    my $content = $self->read_text_file($path);
+    $content =~ s/\s+\z//;
+    return undef if $content eq q{};
+    return 0 + $content;
+}
+
+sub write_listener_offset {
+    my ( $self, $path, $offset ) = @_;
+    return $self->write_text_file( $path, $offset . "\n" );
+}
+
+sub append_inbox_entry {
+    my ( $self, $path, $entry ) = @_;
+    make_path( dirname($path) ) if !-d dirname($path);
+    open my $fh, '>>', $path or die "Unable to append $path: $!";
+    print {$fh} encode_json($entry) . "\n";
+    close $fh or die "Unable to close $path: $!";
+    return $path;
+}
+
+sub update_needs_listener_reply {
+    my ( $self, $summary ) = @_;
+    return 1 if defined $summary->{text}     && $summary->{text} ne q{};
+    return 1 if defined $summary->{caption}  && $summary->{caption} ne q{};
+    return 1 if $summary->{photo};
+    return 1 if $summary->{document};
+    return 1 if $summary->{audio};
+    return 1 if $summary->{video};
+    return 1 if $summary->{voice};
+    return 0;
+}
+
 sub resolve_token {
     my ( $self, $explicit ) = @_;
     my $token = defined $explicit && $explicit ne q{}
@@ -867,17 +986,24 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.01',
+        agent   => 'telegram-codex/0.02',
         timeout => 60,
     );
     return $ua;
 }
 
+sub _default_skill_root {
+    my ($class) = @_;
+    return File::Spec->rel2abs(
+        File::Spec->catdir( dirname(__FILE__), File::Spec->updir, File::Spec->updir, File::Spec->updir )
+    );
+}
+
 sub _merged_env {
     my ($self) = @_;
     my %env = %ENV;
-    my $skill_env = File::Spec->catfile( $self->{cwd}, '.env' );
-    if ( -f $skill_env ) {
+    for my $skill_env ( $self->_env_candidate_files ) {
+        next if !-f $skill_env;
         open my $fh, '<', $skill_env or die "Unable to read $skill_env: $!";
         while ( my $line = <$fh> ) {
             chomp $line;
@@ -887,6 +1013,27 @@ sub _merged_env {
         close $fh or die "Unable to close $skill_env: $!";
     }
     return \%env;
+}
+
+sub _env_candidate_files {
+    my ($self) = @_;
+    my @files;
+    my %seen;
+    my $dir = $self->{cwd};
+    while ( defined $dir && $dir ne q{} ) {
+        my $path = File::Spec->catfile( $dir, '.env' );
+        if ( !$seen{$path}++ ) {
+            push @files, $path;
+        }
+        my $parent = dirname($dir);
+        last if !defined $parent || $parent eq $dir;
+        $dir = $parent;
+    }
+    my $skill_root_env = File::Spec->catfile( $self->{skill_root}, '.env' );
+    if ( !$seen{$skill_root_env}++ ) {
+        push @files, $skill_root_env;
+    }
+    return @files;
 }
 
 1;

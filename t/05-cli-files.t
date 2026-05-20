@@ -9,6 +9,7 @@ my @cli_files = qw(
   cli/get-me
   cli/updates
   cli/download
+  cli/listen
   cli/reply
   cli/send-photo
   cli/send-document

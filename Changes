@@ -1,3 +1,14 @@
+0.02 2026-05-20
+    - added `dashboard telegram-codex.listen` and `./cli/listen` for a
+      long-poll always-on listener with persistent update offset state and
+      local inbox ledger capture
+    - made `TELEGRAM_BOT_TOKEN` discovery search the active project `.env`,
+      parent/root `.env`, skill `.env`, and process environment so
+      `dashboard telegram-codex...` can pick it up without an explicit export
+    - documented the continuous listener workflow and bounded listener test
+      mode, and added Docker-verified regression coverage for listener state,
+      inbox logging, and executable wrapper behavior
+
 0.01 2026-05-20
     - added the first packaged `telegram-codex` skill with install, get-me,
       updates, download, reply, send-photo, send-document, and `/start`

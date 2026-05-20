@@ -209,4 +209,49 @@ sub capture_run {
     is( decode_json($stdout)->{checked}, 1, 'main_auto_reply_start prints JSON result' );
 }
 
+{
+    my ( $rc, $stdout, $stderr ) = capture_run(
+        sub {
+            my ( $out_fh, $err_fh ) = @_;
+            my $runtime = '/tmp/telegram-codex-listen-cli';
+            mkdir $runtime if !-d $runtime;
+            my $manager = Telegram::Codex::Manager->new(
+                stdout_fh => $out_fh,
+                stderr_fh => $err_fh,
+                env       => {
+                    TELEGRAM_BOT_TOKEN         => 'token-xyz',
+                    TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+                },
+                get_runner => sub {
+                    return {
+                        ok     => JSON::XS::true,
+                        result => [
+                            {
+                                update_id => 15,
+                                message   => {
+                                    message_id => 9,
+                                    text       => 'hi listener',
+                                    chat       => { id => 77, type => 'private' },
+                                },
+                            },
+                        ],
+                    };
+                },
+                post_runner => sub {
+                    my ( $method, $params ) = @_;
+                    return { ok => JSON::XS::true, result => { message_id => 61, chat => { id => $params->{chat_id} }, text => $params->{text} } };
+                },
+            );
+            my $rc = $manager->main_listen( 1, 0, 'listener online' );
+            unlink "$runtime/listener.offset" if -f "$runtime/listener.offset";
+            unlink "$runtime/listener.inbox.jsonl" if -f "$runtime/listener.inbox.jsonl";
+            rmdir $runtime;
+            return $rc;
+        }
+    );
+    is( $rc, 0, 'main_listen succeeds' );
+    is( $stderr, q{}, 'main_listen leaves stderr empty' );
+    is( decode_json($stdout)->{replied}, 1, 'main_listen prints listener result JSON' );
+}
+
 done_testing;

@@ -6,7 +6,9 @@
 
 ## Value
 
-It gives you a governed path to connect Telegram Bot API with Codex so you can poll messages, inspect photo or file metadata, download Telegram attachments locally, and send replies back to the same Telegram chat.
+It gives you a governed path to connect Telegram Bot API with Codex so you can poll messages, inspect text, photo, video, audio, voice, or file metadata, download Telegram attachments locally, and send replies back to the same Telegram chat.
+
+It now also supports a long-poll listener mode so the bot can stay active and reply immediately without waiting for a manual Codex inbox check.
 
 ## Problem It Solves
 
@@ -27,6 +29,9 @@ The installed plugin exposes a stdio MCP server with tools for:
 - sending photos
 - sending documents
 - auto-replying to `/start`
+- receiving text, photos, video, audio, voice, and documents through update metadata
+
+The skill itself also exposes an always-on listener command that keeps a local Telegram inbox ledger and persistent update offset.
 
 ## Developer Dashboard Feature Added
 
@@ -40,6 +45,7 @@ This skill adds:
 - `dashboard telegram-codex.send-photo`
 - `dashboard telegram-codex.send-document`
 - `dashboard telegram-codex.auto-reply-start`
+- `dashboard telegram-codex.listen`
 
 ## Installation
 
@@ -54,6 +60,13 @@ Then install the local Codex plugin bridge with a Telegram bot token:
 ```bash
 dashboard telegram-codex.install 123456:telegram-bot-token
 ```
+
+After install, regular commands can discover `TELEGRAM_BOT_TOKEN` automatically from:
+
+- the active project `.env`
+- a parent/root `.env`
+- the skill-local `.env`
+- the process environment
 
 By default the skill writes the plugin bridge into:
 
@@ -72,9 +85,10 @@ Run the local skill entrypoints directly from this repo:
 ```bash
 cd ~/projects/skills/skills/telegram-codex
 ./cli/install 123456:telegram-bot-token
-TELEGRAM_BOT_TOKEN=123456:telegram-bot-token ./cli/get-me
-TELEGRAM_BOT_TOKEN=123456:telegram-bot-token ./cli/updates
-TELEGRAM_BOT_TOKEN=123456:telegram-bot-token ./cli/auto-reply-start
+./cli/get-me
+./cli/updates
+./cli/auto-reply-start
+./cli/listen
 ```
 
 Use the same behavior through the installed dashboard commands:
@@ -88,43 +102,56 @@ dashboard telegram-codex.install 123456:telegram-bot-token
 Check the configured bot identity:
 
 ```bash
-TELEGRAM_BOT_TOKEN=123456:telegram-bot-token dashboard telegram-codex.get-me
+dashboard telegram-codex.get-me
 ```
 
 Poll recent Telegram updates:
 
 ```bash
-TELEGRAM_BOT_TOKEN=123456:telegram-bot-token dashboard telegram-codex.updates
+dashboard telegram-codex.updates
 ```
 
 Download a Telegram file by `file_id`:
 
 ```bash
-TELEGRAM_BOT_TOKEN=123456:telegram-bot-token dashboard telegram-codex.download AgACAgQAAxkBAAIB...
+dashboard telegram-codex.download AgACAgQAAxkBAAIB...
 ```
 
 Reply to a Telegram chat:
 
 ```bash
-TELEGRAM_BOT_TOKEN=123456:telegram-bot-token dashboard telegram-codex.reply 123456789 'Hello from Codex'
+dashboard telegram-codex.reply 123456789 'Hello from Codex'
 ```
 
 Send a local photo:
 
 ```bash
-TELEGRAM_BOT_TOKEN=123456:telegram-bot-token dashboard telegram-codex.send-photo 123456789 ~/Pictures/demo.png
+dashboard telegram-codex.send-photo 123456789 ~/Pictures/demo.png
 ```
 
 Send a local file:
 
 ```bash
-TELEGRAM_BOT_TOKEN=123456:telegram-bot-token dashboard telegram-codex.send-document 123456789 ~/Downloads/report.pdf
+dashboard telegram-codex.send-document 123456789 ~/Downloads/report.pdf
 ```
 
 Auto-reply to recent `/start` messages:
 
 ```bash
-TELEGRAM_BOT_TOKEN=123456:telegram-bot-token dashboard telegram-codex.auto-reply-start
+dashboard telegram-codex.auto-reply-start
+```
+
+Run the always-on long-poll listener in the foreground:
+
+```bash
+dashboard telegram-codex.listen
+```
+
+Run it continuously in the background from the skill checkout:
+
+```bash
+cd ~/projects/skills/skills/telegram-codex
+nohup ./cli/listen >/tmp/telegram-codex-listener.log 2>&1 &
 ```
 
 ## Browser Usage
@@ -149,6 +176,14 @@ Use `dashboard telegram-codex.auto-reply-start` immediately after a new Telegram
 Use `dashboard telegram-codex.reply`, `send-photo`, or `send-document` when you already know the target `chat_id`.
 ```
 
+```text
+Use `dashboard telegram-codex.listen` when you want immediate bot acknowledgements without manually polling `updates` from an active Codex session.
+```
+
+```text
+Use `dashboard telegram-codex.download <FILE_ID>` after an inbound photo, video, audio, voice, or document update when Codex needs the actual file content rather than just Telegram metadata.
+```
+
 ## Edge Cases
 
 ```text
@@ -166,6 +201,14 @@ If no Telegram updates are pending, `dashboard telegram-codex.updates` returns a
 ```text
 If `/start` has already been consumed from the Telegram update queue, `dashboard telegram-codex.auto-reply-start` returns zero replies and leaves the queue state unchanged.
 ```
+
+```text
+If you restart `dashboard telegram-codex.listen`, it resumes from the stored listener offset instead of reprocessing old Telegram updates.
+```
+
+## Agent Handoff
+
+- `AGENT.SKILL.md`
 
 ## Docs
 
