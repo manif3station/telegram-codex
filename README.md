@@ -8,7 +8,7 @@
 
 It gives you a governed path to connect Telegram Bot API with Codex so you can poll messages, inspect text, photo, video, audio, voice, or file metadata, download Telegram attachments locally, and send replies back to the same Telegram chat.
 
-It now also supports a long-poll listener mode so the bot can stay active and reply immediately without waiting for a manual Codex inbox check.
+It now also supports a long-poll listener mode so the bot can stay active and capture inbound Telegram activity without waiting for a manual Codex inbox check.
 
 After `dashboard skills install telegram-codex`, the startup chain is:
 
@@ -42,6 +42,7 @@ The installed plugin exposes a stdio MCP server with tools for:
 
 The skill itself also exposes an always-on listener command that keeps a per-Codex-session Telegram inbox ledger and persistent update offset.
 If the offset file is missing, the listener now recovers the next offset from the inbox ledger and skips stale returned updates older than that offset so old Telegram messages are not re-acknowledged again.
+The listener is passive by default and does not send a placeholder bot reply unless you pass an explicit reply text on the command line.
 
 ## Developer Dashboard Feature Added
 
@@ -176,6 +177,12 @@ Run the always-on long-poll listener in the foreground:
 dashboard telegram-codex.listen
 ```
 
+Run the listener with an explicit acknowledgement reply only when you really want one:
+
+```bash
+dashboard telegram-codex.listen 0 30 'Message received'
+```
+
 Launch Codex with automatic Telegram listener startup:
 
 ```bash
@@ -223,7 +230,7 @@ Use `dashboard telegram-codex.updates` after you send the bot a message or uploa
 ```
 
 ```text
-Use `dashboard telegram-codex.auto-reply-start` immediately after a new Telegram user sends `/start` if you want a fast bot-side readiness reply before a longer Codex workflow begins.
+Use `dashboard telegram-codex.auto-reply-start` immediately after a new Telegram user sends `/start` if you want a fast explicit bot-side readiness reply before a longer Codex workflow begins.
 ```
 
 ```text

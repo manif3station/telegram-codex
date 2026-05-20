@@ -839,7 +839,7 @@ sub new_manager {
         env  => {
             TELEGRAM_BOT_TOKEN                   => 'token-xyz',
             TELEGRAM_CODEX_RUNTIME_DIR           => $runtime,
-            CODEX_SESSION_ID                     => 'session-prime-then-reply',
+            CODEX_SESSION_ID                     => 'session-prime-then-capture',
             TELEGRAM_CODEX_LISTENER_PRIME_LATEST => '1',
         },
         get_runner => sub {
@@ -865,17 +865,9 @@ sub new_manager {
     );
     my $result = $manager->execute_listen( 1, 0 );
     is( $result->{processed}, 1, 'prime-latest auto-start still processes new messages after priming the old backlog away' );
-    is( $result->{replied}, 1, 'prime-latest auto-start still replies to new messages after priming' );
+    is( $result->{replied}, 0, 'prime-latest auto-start does not auto-reply by default after priming' );
     is( $manager->read_text_file( $result->{offset_file} ), "103\n", 'prime-latest auto-start advances offset after the new message cycle' );
-    is_deeply(
-        $post_calls[0][1],
-        {
-            chat_id             => 88,
-            text                => 'telegram-codex listener is live. Your message was received and queued for Codex.',
-            reply_to_message_id => 3,
-        },
-        'prime-latest auto-start replies only to the first truly new message after priming',
-    );
+    is( scalar @post_calls, 0, 'prime-latest auto-start only captures the new message unless a reply text is explicitly provided' );
 }
 
 {

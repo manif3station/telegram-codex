@@ -131,6 +131,7 @@ dashboard telegram-codex.listen
 
 That command long-polls Telegram, appends inbound message summaries to `~/.telegram-codex/<session-id>/listener.inbox.jsonl`, and persists the next Telegram offset in `~/.telegram-codex/<session-id>/listener.offset`.
 If `listener.offset` is missing but the inbox ledger exists, the listener recovers the next offset from the latest inbox entry and skips any returned update older than that recovered offset.
+By default it does not send a Telegram reply. It only captures inbound activity unless you pass an explicit reply text.
 
 Session id resolution order is:
 
@@ -138,7 +139,7 @@ Session id resolution order is:
 2. `CODEX_SESSION_ID`
 3. `default`
 
-The listener sends an immediate text acknowledgement for inbound:
+When you pass an explicit reply text, the listener can send an acknowledgement for inbound:
 
 - text
 - photos
@@ -149,10 +150,16 @@ The listener sends an immediate text acknowledgement for inbound:
 
 If Telegram rejects a reply, for example with a rate-limit error, the listener still advances the stored offset and records the reply failure instead of replaying the same inbound message forever on the next start.
 
-For a controlled one-cycle check:
+For a passive one-cycle check:
 
 ```bash
-./cli/listen 1 0 'telegram-codex listener is live'
+./cli/listen 1 0
+```
+
+For an explicit acknowledgement reply:
+
+```bash
+./cli/listen 1 0 'Message received'
 ```
 
 For a background listener from the skill checkout:

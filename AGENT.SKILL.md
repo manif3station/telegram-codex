@@ -145,7 +145,8 @@ dashboard telegram-codex.start
   - `default`
 - recovers the next offset from the inbox ledger when `listener.offset` is missing
 - skips any returned update older than the next stored offset so stale Telegram backlog is not re-acknowledged again
-- sends an immediate text acknowledgement for inbound:
+- does not send any Telegram reply by default
+- sends an acknowledgement for inbound only when an explicit reply text is passed:
   - text
   - photos
   - videos
@@ -194,7 +195,8 @@ nohup ./cli/listen >/tmp/telegram-codex-listener.log 2>&1 &
 
 - Do not claim binary media content has been inspected unless the file was downloaded first.
 - Do not claim audio or video sending support; only text, photo, and document sending are implemented.
-- Do use the listener when immediate replies are required.
+- Do use the listener for passive inbox capture by default.
+- Do pass an explicit reply text only when an acknowledgement message is truly wanted.
 - Do use a stable `CODEX_SESSION_ID` or `TELEGRAM_CODEX_SESSION_ID` when you want a later Codex session to resume the same Telegram conversation history cleanly.
 - Do launch Codex through the managed `codex` command path, or call `dashboard telegram-codex.start` directly, when Telegram is meant to be the primary communication channel.
 - Do expect the first managed auto-start to ignore stale backlog messages and only auto-reply to new inbound messages after the listener offset is primed.

@@ -286,7 +286,7 @@ sub execute_listen {
     }
     my $reply_text = @argv
       ? join( q{ }, @argv )
-      : 'telegram-codex listener is live. Your message was received and queued for Codex.';
+      : undef;
 
     my $paths = $self->listener_paths;
     make_path( $paths->{runtime_dir} ) if !-d $paths->{runtime_dir};
@@ -335,7 +335,7 @@ sub execute_listen {
             $processed++;
             my $message = $update->{message} || $update->{edited_message} || {};
             my $chat_id = $message->{chat}{id};
-            if ( defined $chat_id && $self->update_needs_listener_reply($summary) ) {
+            if ( defined $reply_text && $reply_text ne q{} && defined $chat_id && $self->update_needs_listener_reply($summary) ) {
                 my $sent = eval {
                     $self->telegram_post(
                         'sendMessage',
@@ -998,7 +998,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.08',
+        agent   => 'telegram-codex/0.09',
         timeout => 60,
     );
     return $ua;
