@@ -57,6 +57,7 @@ sub new_manager {
         listener_start_runner => $args{listener_start_runner},
         listener_start_pid    => $args{listener_start_pid},
         sleep_runner         => $args{sleep_runner},
+        codex_resume_runner  => $args{codex_resume_runner},
     );
 }
 
@@ -351,7 +352,8 @@ sub new_manager {
     is_deeply( $plan->{codex_args}, ['--full-auto'], 'execute_start preserves direct codex args without a saved session mapping' );
     is( $plan->{start_listener}, 1, 'execute_start enables listener startup when autostart is enabled and a token is available' );
     is( $plan->{listener_session_id}, 'default', 'execute_start falls back to default listener session id when no Codex session is known yet' );
-    is( $plan->{listener_reply_text}, 'Message received. Codex is active here.', 'execute_start plans a concise Telegram acknowledgement reply for managed startup' );
+    is( $plan->{listener_mode}, 'codex-session', 'execute_start plans managed startup through Codex session reply mode' );
+    is( $plan->{codex_session_id}, 'default', 'execute_start plans managed startup against the resolved Codex session id' );
 }
 
 {
@@ -442,13 +444,17 @@ sub new_manager {
         },
         listener_start_pid => 424242,
         listener_start_runner => sub {
-            my ( $session_id, $paths, $reply_text ) = @_;
+            my ( $session_id, $paths, $options ) = @_;
             open my $fh, '>>', $listener_marker or die $!;
-            print {$fh} "$session_id|$paths->{log_file}|$reply_text\n";
+            print {$fh} "$session_id|$paths->{log_file}|$options->{mode}|$options->{codex_session_id}\n";
             close $fh or die $!;
         },
     );
-    my $paths = $manager->start_listener_if_needed( 'session-launch-88', 'Message received. Codex is active here.' );
+    my $paths = $manager->start_listener_if_needed(
+        'session-launch-88',
+        mode             => 'codex-session',
+        codex_session_id => 'session-launch-88',
+    );
     ok( -f $paths->{pid_file}, 'start_listener_if_needed writes a pid file in the session runtime directory' );
     ok( defined $paths->{log_file} && $paths->{log_file} ne q{}, 'start_listener_if_needed returns the session log path' );
     is( $manager->read_text_file( $paths->{pid_file} ), "424242\n", 'start_listener_if_needed records the provided listener pid in test mode without forking a real listener' );
@@ -458,7 +464,7 @@ sub new_manager {
         <$fh>;
     };
     like( $marker, qr/session-launch-88/, 'start_listener_if_needed runs the child listener startup path for the requested session' );
-    like( $marker, qr/Message received\. Codex is active here\./, 'start_listener_if_needed passes the managed startup reply text into the listener launch path' );
+    like( $marker, qr/codex-session/, 'start_listener_if_needed passes the managed startup listener mode into the launch path' );
 }
 
 {
@@ -513,7 +519,7 @@ sub new_manager {
     make_path($bin_dir);
     my $dashboard_log = File::Spec->catfile( $home, 'dashboard.exec.log' );
     my $dashboard = File::Spec->catfile( $bin_dir, 'dashboard' );
-    _write( $dashboard, "#!/bin/sh\nprintf '%s\\n' \"\$@\" > \"$dashboard_log\"\nexit 0\n" );
+    _write( $dashboard, "#!/bin/sh\nprintf '%s\\n' \"\$TELEGRAM_CODEX_LISTENER_MODE\" \"\$TELEGRAM_CODEX_TARGET_SESSION_ID\" \"\$@\" > \"$dashboard_log\"\nexit 0\n" );
     chmod 0755, $dashboard or die "Unable to chmod fake dashboard: $!";
     local $ENV{PATH} = $bin_dir;
     my $manager = new_manager(
@@ -523,14 +529,18 @@ sub new_manager {
             TELEGRAM_CODEX_RUNTIME_DIR => $home,
         },
     );
-    my $paths = $manager->start_listener_if_needed( 'session-forked-22', 'Message received. Codex is active here.' );
+    my $paths = $manager->start_listener_if_needed(
+        'session-forked-22',
+        mode             => 'codex-session',
+        codex_session_id => 'session-forked-22',
+    );
     waitpid $paths->{pid}, 0 if $paths->{pid};
     my $exec_log = do {
         open my $fh, '<', $dashboard_log or die $!;
         local $/;
         <$fh>;
     };
-    is( $exec_log, "telegram-codex.listen\n0\n30\nMessage received. Codex is active here.\n", 'start_listener_if_needed can fork and exec an isolated fake dashboard listener command with the managed startup reply text' );
+    is( $exec_log, "codex-session\nsession-forked-22\ntelegram-codex.listen\n0\n30\n", 'start_listener_if_needed can fork and exec an isolated fake dashboard listener command with managed session-response env' );
 }
 
 {
@@ -749,6 +759,108 @@ sub new_manager {
     is( decode_json( $entries[1] )->{document}{file_name}, 'report.pdf', 'listen logs document metadata in inbox ledger' );
     is( $result->{offset_file}, $offset_file, 'listen reports the session-specific offset path' );
     is( $result->{inbox_file}, $inbox_file, 'listen reports the session-specific inbox path' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my @resume_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR      => $runtime,
+            CODEX_SESSION_ID                => 'session-managed-listen',
+            TELEGRAM_CODEX_LISTENER_MODE    => 'codex-session',
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-managed-listen',
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 40,
+                        message   => {
+                            message_id => 12,
+                            text       => 'hello2',
+                            chat       => { id => 88, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        codex_resume_runner => sub {
+            my ( $session_id, $prompt, $summary ) = @_;
+            push @resume_calls, [ $session_id, $prompt, $summary ];
+            return 'This is a real Codex session reply.';
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 601, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    my $result = $manager->execute_listen( 1, 0 );
+    is( $result->{processed}, 1, 'managed listener mode processes inbound Telegram messages' );
+    is( $result->{replied}, 1, 'managed listener mode sends one reply after Codex generates it' );
+    is( scalar @resume_calls, 1, 'managed listener mode resumes the active Codex session to generate the Telegram reply text' );
+    is( $resume_calls[0][0], 'session-managed-listen', 'managed listener mode targets the active Codex session id' );
+    like( $resume_calls[0][1], qr/text=hello2/, 'managed listener mode passes the inbound Telegram text into the Codex reply prompt' );
+    is( $post_calls[0][1]{text}, 'This is a real Codex session reply.', 'managed listener mode sends the Codex-generated reply instead of a placeholder' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $bin_dir = File::Spec->catdir( $runtime, 'bin' );
+    make_path($bin_dir);
+    my $args_file = File::Spec->catfile( $runtime, 'resume.args' );
+    my $real_codex = File::Spec->catfile( $bin_dir, 'codex-real' );
+    _write( $real_codex, <<"EOF" );
+#!/bin/sh
+OUT=""
+PREV=""
+for ARG in "\$@"; do
+  if [ "\$PREV" = "--output-last-message" ]; then
+    OUT="\$ARG"
+  fi
+  PREV="\$ARG"
+done
+printf '%s\n' "\$@" > "$args_file"
+printf '  Live Codex Telegram reply.  ' > "\$OUT"
+exit 0
+EOF
+    chmod 0755, $real_codex or die "Unable to chmod fake real codex resume binary: $!";
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR      => $runtime,
+            CODEX_SESSION_ID                => 'session-real-resume',
+            TELEGRAM_CODEX_LISTENER_MODE    => 'codex-session',
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-real-resume',
+            CODEX_REAL_BIN                  => $real_codex,
+        },
+    );
+    my $reply = $manager->codex_session_reply_for_update(
+        {
+            message_id => 14,
+            text       => 'hello from telegram',
+            chat       => { id => 88, type => 'private' },
+        }
+    );
+    is( $reply, 'Live Codex Telegram reply.', 'codex_session_reply_for_update uses the real codex exec resume path and trims the generated reply text' );
+    my $args = do {
+        open my $fh, '<', $args_file or die $!;
+        local $/;
+        <$fh>;
+    };
+    like( $args, qr/^exec\nresume\n--skip-git-repo-check\n--output-last-message\n/m, 'codex_session_reply_for_update invokes codex exec resume with an output capture file' );
+    like( $args, qr/session-real-resume/, 'codex_session_reply_for_update targets the managed session id when it runs the real codex binary' );
 }
 
 {

@@ -44,6 +44,13 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
   - `Files=6, Tests=223`
   - `lib/Telegram/Codex/Manager.pm` statement `100.0`
   - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Docker functional gate for `DD-280`:
+  - `Files=6, Tests=233`
+  - `Result: PASS`
+- Docker covered gate for `DD-280`:
+  - `Files=6, Tests=233`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
 - Docker listener gate:
   - `Files=6, Tests=181`
   - listener state, session-specific runtime paths, inbox ledger, wrapper executability, thin-launcher generation, preserved saved-session resume mapping, no-backlog first auto-start behavior, `.env` discovery paths, and audio/video/voice reply eligibility are covered
@@ -55,9 +62,20 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 - Passive listener regression:
   - listener no longer sends the placeholder `queued for Codex` reply unless an explicit reply text is passed
 - Managed start two-way regression:
-  - `dashboard telegram-codex.start` now launches the listener with the concise acknowledgement `Message received. Codex is active here.`
+  - `dashboard telegram-codex.start` now launches the listener in managed Codex-session mode instead of using a static acknowledgement
   - transient `getUpdates` transport failures are retried instead of killing the listener immediately
   - stale stored offsets are clamped up to the newer inbox-ledger offset so duplicated older Telegram updates are not replayed
+- Managed Codex-session reply regression:
+  - managed listener mode now resumes the active Codex session and sends the Codex-generated Telegram reply instead of a placeholder acknowledgement
+- Live managed reply proof on 2026-05-20:
+  - pending Telegram update `Hello2` at `update_id=165258698` was still present in the real bot queue before the one-cycle managed listener pass
+  - the updated listener resumed Codex session `019e0730-04ca-7402-94f9-aaac2782b399`
+  - the resumed session generated the reply text:
+    - `I’m here. I’ve replaced the placeholder reply path with a real Codex session responder and I’m verifying the live Telegram flow now.`
+  - the one-cycle managed listener completed with:
+    - `processed=1`
+    - `replied=1`
+    - `next_offset=165258699`
 - Earlier covered gate:
   - `lib/Telegram/Codex/Manager.pm` statement `100.0`
   - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`

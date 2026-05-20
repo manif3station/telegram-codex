@@ -168,7 +168,7 @@ The real startup logic in `telegram-codex.start`:
 - keeps one listener per session id
 - persists wrapper-managed pid and log files under `~/.telegram-codex/<session-id>/`
 - primes to the latest Telegram update on the first auto-start when no stored offset exists, so old backlog messages are not auto-replied
-- sends the concise acknowledgement `Message received. Codex is active here.` for each new inbound Telegram message after the prime step
+- resumes the active Codex session and asks Codex to generate the Telegram reply text for new inbound text messages after the prime step
 - still advances the stored offset when a reply send fails, so one bad Telegram acknowledgement does not cause repeated message spam
 - retries after transient `getUpdates` transport failures instead of dropping the listener immediately
 
@@ -202,5 +202,5 @@ nohup ./cli/listen >/tmp/telegram-codex-listener.log 2>&1 &
 - Do pass an explicit reply text only when an acknowledgement message is truly wanted.
 - Do use a stable `CODEX_SESSION_ID` or `TELEGRAM_CODEX_SESSION_ID` when you want a later Codex session to resume the same Telegram conversation history cleanly.
 - Do launch Codex through the managed `codex` command path, or call `dashboard telegram-codex.start` directly, when Telegram is meant to be the primary communication channel.
-- Do expect the first managed auto-start to ignore stale backlog messages and only auto-reply to new inbound messages after the listener offset is primed.
+- Do expect the first managed auto-start to ignore stale backlog messages and only route new inbound messages through the active Codex session after the listener offset is primed.
 - Do stop the listener if automatic replies become noisy or unwanted.

@@ -7,6 +7,7 @@ use Cwd qw(getcwd);
 use File::Basename qw(dirname);
 use File::Path qw(make_path);
 use File::Spec;
+use File::Temp qw(tempfile);
 use HTTP::Request::Common qw(GET POST);
 use JSON::XS qw(decode_json encode_json);
 use LWP::UserAgent;
@@ -30,6 +31,7 @@ sub new {
         listener_start_runner => $args{listener_start_runner},
         listener_start_pid   => $args{listener_start_pid},
         sleep_runner         => $args{sleep_runner},
+        codex_resume_runner  => $args{codex_resume_runner},
     }, $class;
     $self->{env} = $args{env} || $self->_merged_env;
     $self->{ua} = $args{ua} || $self->_build_ua;
@@ -136,7 +138,12 @@ sub execute_start {
     my $plan = $self->codex_start_plan( $config, @argv );
     return $plan if $self->env_value('TELEGRAM_CODEX_START_CAPTURE');
 
-    $self->start_listener_if_needed( $plan->{listener_session_id}, $plan->{listener_reply_text} ) if $plan->{start_listener};
+    $self->start_listener_if_needed(
+        $plan->{listener_session_id},
+        mode             => $plan->{listener_mode},
+        reply_text       => $plan->{listener_reply_text},
+        codex_session_id => $plan->{codex_session_id},
+    ) if $plan->{start_listener};
 
     if ( my $ollama_model = $self->env_value('OLLAMA_MODEL') ) {
         my $default_model = 'qwen3.5:397b-cloud';
@@ -349,13 +356,14 @@ sub execute_listen {
             $processed++;
             my $message = $update->{message} || $update->{edited_message} || {};
             my $chat_id = $message->{chat}{id};
-            if ( defined $reply_text && $reply_text ne q{} && defined $chat_id && $self->update_needs_listener_reply($summary) ) {
+            my $reply_message = $self->listener_reply_message_for_update( $summary, $reply_text );
+            if ( defined $reply_message && $reply_message ne q{} && defined $chat_id && $self->update_needs_listener_reply($summary) ) {
                 my $sent = eval {
                     $self->telegram_post(
                         'sendMessage',
                         {
                             chat_id             => $chat_id,
-                            text                => $reply_text,
+                            text                => $reply_message,
                             reply_to_message_id => $message->{message_id},
                         }
                     );
@@ -595,12 +603,14 @@ sub codex_start_plan {
         real_codex_bin      => $self->resolve_real_codex_bin( $self->codex_launcher_paths ),
         start_listener      => ( $self->env_value('TELEGRAM_BOT_TOKEN') && ( $self->env_value('TELEGRAM_CODEX_ENABLE_AUTOSTART') || q{} ) eq '1' ) ? 1 : 0,
         listener_session_id => $listener_session_id,
-        listener_reply_text => $self->managed_listener_reply_text,
+        listener_mode       => $self->managed_listener_mode,
+        listener_reply_text => undef,
+        codex_session_id    => $listener_session_id,
     };
 }
 
 sub start_listener_if_needed {
-    my ( $self, $session_id, $reply_text ) = @_;
+    my ( $self, $session_id, %options ) = @_;
     my $paths = $self->listener_paths_for_session($session_id);
     make_path( $paths->{runtime_dir} ) if !-d $paths->{runtime_dir};
     if ( -f $paths->{pid_file} ) {
@@ -618,7 +628,7 @@ sub start_listener_if_needed {
 
     if ( $self->{listener_start_runner} ) {
         my $pid = defined $self->{listener_start_pid} ? $self->{listener_start_pid} : $$;
-        $self->{listener_start_runner}->( $session_id, $paths, $reply_text );
+        $self->{listener_start_runner}->( $session_id, $paths, \%options );
         $self->write_text_file( $paths->{pid_file}, "$pid\n" );
         return {
             listener_running    => 0,
@@ -636,8 +646,10 @@ sub start_listener_if_needed {
         open STDERR, '>>', $paths->{log_file} or die "Unable to reopen stderr: $!"; # uncoverable statement
         $ENV{TELEGRAM_CODEX_SESSION_ID} = $session_id;
         $ENV{TELEGRAM_CODEX_LISTENER_PRIME_LATEST} = 1;
+        $ENV{TELEGRAM_CODEX_LISTENER_MODE} = $options{mode} if defined $options{mode} && $options{mode} ne q{};
+        $ENV{TELEGRAM_CODEX_TARGET_SESSION_ID} = $options{codex_session_id} if defined $options{codex_session_id} && $options{codex_session_id} ne q{};
         my @command = ( 'dashboard', 'telegram-codex.listen', 0, 30 );
-        push @command, $reply_text if defined $reply_text && $reply_text ne q{};
+        push @command, $options{reply_text} if defined $options{reply_text} && $options{reply_text} ne q{};
         my $exit = system(@command);
         exit( $exit == -1 ? 1 : ( $exit >> 8 ) );
     }
@@ -936,11 +948,64 @@ sub recover_listener_offset_from_inbox {
     return undef;
 }
 
-sub managed_listener_reply_text {
-    my ($self) = @_;
-    my $reply_text = $self->env_value('TELEGRAM_CODEX_START_REPLY_TEXT');
-    return $reply_text if defined $reply_text && $reply_text ne q{};
-    return 'Message received. Codex is active here.';
+sub managed_listener_mode {
+    return 'codex-session';
+}
+
+sub listener_reply_message_for_update {
+    my ( $self, $summary, $reply_text ) = @_;
+    my $mode = $self->env_value('TELEGRAM_CODEX_LISTENER_MODE') || 'static';
+    if ( $mode eq 'codex-session' ) {
+        return $self->codex_session_reply_for_update($summary);
+    }
+    return $reply_text;
+}
+
+sub codex_session_reply_for_update {
+    my ( $self, $summary ) = @_;
+    my $session_id = $self->env_value('TELEGRAM_CODEX_TARGET_SESSION_ID') || $self->listener_session_id;
+    my $prompt = $self->codex_session_reply_prompt($summary);
+    if ( $self->{codex_resume_runner} ) {
+        return $self->{codex_resume_runner}->( $session_id, $prompt, $summary );
+    }
+    my $paths = $self->codex_launcher_paths;
+    my $real_codex_bin = $self->resolve_real_codex_bin($paths);
+    make_path( $self->listener_paths->{runtime_dir} ) if !-d $self->listener_paths->{runtime_dir};
+    my ( $fh, $output_file ) = tempfile( 'telegram-codex-reply-XXXX', DIR => $self->listener_paths->{runtime_dir}, SUFFIX => '.txt' );
+    close $fh or die "Unable to close $output_file: $!";
+    my @command = (
+        $real_codex_bin,
+        'exec',
+        'resume',
+        '--skip-git-repo-check',
+        '--output-last-message',
+        $output_file,
+        $session_id,
+        $prompt,
+    );
+    my $exit = system(@command);
+    die "Codex resume failed for Telegram reply\n" if $exit == -1 || ( $exit >> 8 ) != 0;
+    my $reply = $self->read_text_file($output_file);
+    unlink $output_file;
+    $reply =~ s/\A\s+//;
+    $reply =~ s/\s+\z//;
+    return $reply;
+}
+
+sub codex_session_reply_prompt {
+    my ( $self, $summary ) = @_;
+    my $text = defined $summary->{text} ? $summary->{text} : q{};
+    my $caption = defined $summary->{caption} ? $summary->{caption} : q{};
+    my $chat_id = defined $summary->{chat} ? $summary->{chat}{id} : q{};
+    my $message_id = defined $summary->{message_id} ? $summary->{message_id} : q{};
+    return join "\n",
+      'A Telegram user sent a message to this active Codex session.',
+      'Reply as this Codex session, using the current conversation context.',
+      'Return only the exact Telegram reply text. No markdown fences. No explanations. No tool narration.',
+      "chat_id=$chat_id",
+      "message_id=$message_id",
+      "text=$text",
+      "caption=$caption";
 }
 
 sub listener_pause_seconds {
@@ -1033,7 +1098,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.10',
+        agent   => 'telegram-codex/0.11',
         timeout => 60,
     );
     return $ua;

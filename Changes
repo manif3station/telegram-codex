@@ -1,3 +1,12 @@
+0.11 2026-05-20
+    - routed managed `telegram-codex.start` listener replies through the
+      active Codex session by resuming that session and asking Codex to
+      generate the Telegram reply text
+    - removed the managed startup placeholder/acknowledgement as the actual
+      two-way Telegram reply path
+    - kept direct `telegram-codex.listen` available for passive capture or
+      explicit static acknowledgements when requested
+
 0.10 2026-05-20
     - made `dashboard telegram-codex.start` launch the listener in a stable
       two-way mode with a concise one-line Telegram acknowledgement for new

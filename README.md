@@ -17,7 +17,7 @@ After `dashboard skills install telegram-codex`, the startup chain is:
 - `dashboard telegram-codex.start`
 
 The real Telegram-aware startup logic lives in `telegram-codex.start`, so the listener starts automatically for that Codex session while preserving the original saved-session resume behavior from `TICKET_REF` and `~/.developer-dashboard/config/codex.json`.
-On the first auto-start with no stored offset, it primes to the latest Telegram update, does not auto-reply to old backlog messages, and then sends one concise acknowledgement reply for each new inbound Telegram message.
+On the first auto-start with no stored offset, it primes to the latest Telegram update, does not auto-reply to old backlog messages, and then routes each new inbound Telegram text message back through the active Codex session so Codex generates the reply within that session context.
 
 ## Problem It Solves
 
@@ -43,7 +43,7 @@ The installed plugin exposes a stdio MCP server with tools for:
 The skill itself also exposes an always-on listener command that keeps a per-Codex-session Telegram inbox ledger and persistent update offset.
 If the offset file is missing, the listener now recovers the next offset from the inbox ledger and skips stale returned updates older than that offset so old Telegram messages are not re-acknowledged again.
 The listener is passive by default and does not send a placeholder bot reply unless you pass an explicit reply text on the command line.
-`telegram-codex.start` is the managed two-way path and launches the listener with the concise acknowledgement reply `Message received. Codex is active here.`.
+`telegram-codex.start` is the managed two-way path and launches the listener in active Codex-session reply mode instead of placeholder reply mode.
 
 ## Developer Dashboard Feature Added
 
@@ -86,7 +86,7 @@ The managed wrapper hands off into `~/.developer-dashboard/cli/codex`, and `tele
 
 - preserves the original saved-session resume mapping from `TICKET_REF`
 - starts the Telegram listener automatically when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CODEX_ENABLE_AUTOSTART=1` are available
-- passes a single concise acknowledgement reply into the listener so new Telegram messages get one immediate bot response
+- routes inbound Telegram text messages back into the active Codex session and sends the Codex-generated reply text back to Telegram
 - keeps reply-send failures from replaying the same Telegram update forever by still advancing the stored offset
 - survives transient Telegram `getUpdates` transport failures instead of dropping the listener immediately
 - execs the real Codex binary afterward
@@ -245,7 +245,7 @@ Use `dashboard telegram-codex.listen` when you want passive inbox capture withou
 ```
 
 ```text
-Use `codex` after `dashboard skills install telegram-codex` when you want the thin launcher chain to reach `dashboard telegram-codex.start`, preserve any saved ticket-to-session mapping, and bring the Telegram listener up automatically for the current session with one immediate acknowledgement reply per new inbound Telegram message.
+Use `codex` after `dashboard skills install telegram-codex` when you want the thin launcher chain to reach `dashboard telegram-codex.start`, preserve any saved ticket-to-session mapping, and bring the Telegram listener up automatically for the current session so Codex can reply through Telegram using the active session context.
 ```
 
 ```text
