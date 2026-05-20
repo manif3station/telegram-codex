@@ -10,21 +10,28 @@
 
 ```bash
 docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-test bash -lc 'cd /workspace/skills/telegram-codex && cpanm --quiet --notest --installdeps . && prove -lr t'
-docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-test bash -lc 'cd /workspace/skills/telegram-codex && rm -rf cover_db .test-tmp && cpanm --quiet --notest --installdeps . && HARNESS_PERL_SWITCHES=-MDevel::Cover prove -lr t && cover -report text -select lib/Telegram/Codex/Manager.pm'
+docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-test bash -lc 'cd /workspace/skills/telegram-codex && rm -rf cover_db .test-tmp && cpanm --quiet --notest --installdeps . && HARNESS_PERL_SWITCHES=-MDevel::Cover prove -lr t && cover -ignore_covered_err -report text -select lib/Telegram/Codex/Manager.pm -coverage statement -coverage subroutine'
 ```
 
 ## Latest Evidence
 
-- Docker functional gate:
-  - `Files=6, Tests=162`
+- Docker functional gate for `DD-276`:
+  - `Files=6, Tests=202`
   - `Result: PASS`
-- Docker covered gate:
+- Docker covered gate for `DD-276`:
+  - `Files=6, Tests=202`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+  - `cover -ignore_covered_err` is required only for the intentional child-process stdio redirection statements marked `# uncoverable statement`
+- Docker listener gate:
+  - `Files=6, Tests=181`
+  - listener state, session-specific runtime paths, inbox ledger, wrapper executability, thin-launcher generation, preserved saved-session resume mapping, no-backlog first auto-start behavior, `.env` discovery paths, and audio/video/voice reply eligibility are covered
+- Listener replay-spam regression:
+  - Docker now covers the path where `sendMessage` fails and still proves the listener persists the next offset instead of replaying the same inbound Telegram update forever
+- Earlier covered gate:
   - `lib/Telegram/Codex/Manager.pm` statement `100.0`
   - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
   - listener runtime partitioning by Codex session id is covered
-- Docker listener gate:
-  - `Files=6, Tests=162`
-  - listener state, session-specific runtime paths, inbox ledger, wrapper executability, managed `codex` command-path autostart generation, no-backlog first auto-start behavior, `.env` discovery paths, and audio/video/voice reply eligibility are covered
 - Live Telegram proof on 2026-05-20:
   - `./cli/install` created the plugin under `~/.codex/.tmp/plugins/plugins/telegram-codex` and the mirror root when present
   - `./cli/get-me` resolved the configured bot identity successfully

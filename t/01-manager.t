@@ -54,6 +54,8 @@ sub new_manager {
         get_runner      => $args{get_runner},
         post_runner     => $args{post_runner},
         download_runner => $args{download_runner},
+        listener_start_runner => $args{listener_start_runner},
+        listener_start_pid    => $args{listener_start_pid},
     );
 }
 
@@ -77,17 +79,23 @@ sub new_manager {
     ok( -f File::Spec->catfile( $plugin_dir, '.mcp.json' ), 'install writes mcp config' );
     ok( -f File::Spec->catfile( $plugin_dir, '.env' ), 'install writes plugin env file' );
     ok( -f File::Spec->catfile( $plugin_dir, 'scripts', 'telegram_mcp.py' ), 'install writes mcp server script' );
+    is(
+        $manager->read_text_file( File::Spec->catfile( $plugin_dir, 'scripts', 'telegram_mcp.py' ) ),
+        $manager->read_text_file( File::Spec->catfile( $manager->{skill_root}, 'scripts', 'telegram_mcp.py' ) ),
+        'install copies the standalone plugin python script from the skill repo instead of embedding it inside Perl',
+    );
     my $market_data = decode_json( $manager->read_text_file($marketplace) );
     is( $market_data->{plugins}[0]{name}, 'telegram-codex', 'install registers plugin in marketplace' );
     is( $result->{codex_wrapper}{real_codex_path}, '/opt/codex/bin/codex-real', 'install records the wrapped real codex binary path' );
     my $wrapper_path = $result->{codex_wrapper}{wrapper_path};
+    my $dashboard_launcher_path = $result->{codex_wrapper}{dashboard_launcher_path};
     ok( -f $wrapper_path, 'install writes the codex command wrapper into the user PATH' );
+    ok( -f $dashboard_launcher_path, 'install writes the dashboard codex launcher' );
     my $wrapper = $manager->read_text_file($wrapper_path);
-    like( $wrapper, qr/dashboard telegram-codex\.listen/, 'wrapper starts the telegram listener through the dashboard command surface' );
-    like( $wrapper, qr/listener\.pid/, 'wrapper persists a per-session listener pid file' );
-    like( $wrapper, qr/listener\.log/, 'wrapper persists a per-session listener log file' );
-    like( $wrapper, qr/exec "\$REAL_CODEX_BIN" "\$@"/, 'wrapper execs the real codex binary after listener bootstrap' );
+    my $dashboard_launcher = $manager->read_text_file($dashboard_launcher_path);
+    like( $wrapper, qr/exec "\Q$dashboard_launcher_path\E" "\$@"/, 'wrapper hands off into the dashboard codex launcher' );
     like( $wrapper, qr/telegram-codex-managed-codex-wrapper/, 'wrapper is marked as telegram-codex-managed' );
+    like( $dashboard_launcher, qr/exec dashboard telegram-codex\.start "\$@"/, 'dashboard launcher hands off into the skill-owned start entrypoint' );
 }
 
 {
@@ -103,6 +111,7 @@ sub new_manager {
     my $result = $manager->auto_setup;
     is( $result->{mode}, 'auto_setup', 'auto_setup reports its mode' );
     ok( -f File::Spec->catfile( $home, '.local', 'bin', 'codex' ), 'auto_setup provisions the codex wrapper without requiring plugin install' );
+    ok( -f File::Spec->catfile( $home, '.developer-dashboard', 'cli', 'codex' ), 'auto_setup provisions the dashboard codex launcher too' );
 }
 
 {
@@ -244,6 +253,8 @@ sub new_manager {
     is( $paths->{runtime_dir}, File::Spec->catdir( $runtime, 'session-abc' ), 'listener_paths partitions runtime state by CODEX_SESSION_ID' );
     is( $paths->{offset_file}, File::Spec->catfile( $runtime, 'session-abc', 'listener.offset' ), 'listener_paths stores offset under the session directory' );
     is( $paths->{inbox_file}, File::Spec->catfile( $runtime, 'session-abc', 'listener.inbox.jsonl' ), 'listener_paths stores inbox ledger under the session directory' );
+    is( $paths->{pid_file}, File::Spec->catfile( $runtime, 'session-abc', 'listener.pid' ), 'listener_paths stores pid under the session directory' );
+    is( $paths->{log_file}, File::Spec->catfile( $runtime, 'session-abc', 'listener.log' ), 'listener_paths stores log under the session directory' );
 }
 
 {
@@ -277,7 +288,7 @@ sub new_manager {
             TELEGRAM_BOT_TOKEN => 'token-xyz',
         },
     );
-    my $paths = $manager->codex_command_wrapper_paths;
+    my $paths = $manager->codex_launcher_paths;
     is( $manager->resolve_real_codex_bin($paths), $real_codex, 'resolve_real_codex_bin detects the current codex binary from PATH' );
 }
 
@@ -300,7 +311,7 @@ sub new_manager {
             TELEGRAM_BOT_TOKEN => 'token-xyz',
         },
     );
-    my $paths = $manager->codex_command_wrapper_paths;
+    my $paths = $manager->codex_launcher_paths;
     is( $manager->resolve_real_codex_bin($paths), $stored_real, 'resolve_real_codex_bin falls back to the stored real codex path when PATH resolves the wrapper itself' );
 }
 
@@ -316,9 +327,323 @@ sub new_manager {
             TELEGRAM_BOT_TOKEN => 'token-xyz',
         },
     );
-    my $paths = $manager->codex_command_wrapper_paths;
+    my $paths = $manager->codex_launcher_paths;
     my $error = eval { $manager->resolve_real_codex_bin($paths); 1 } ? q{} : $@;
     like( $error, qr/Unable to resolve the real codex binary path/, 'resolve_real_codex_bin fails explicitly when no real codex binary path can be found' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            TICKET_REF                      => 'DD-276',
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_ENABLE_AUTOSTART => '1',
+            TELEGRAM_CODEX_START_CAPTURE    => 1,
+            CODEX_REAL_BIN                  => '/opt/codex/bin/codex-real',
+        },
+    );
+    my $plan = $manager->execute_start('--full-auto');
+    is( $plan->{action}, 'exec', 'execute_start returns an exec plan when capture mode is enabled' );
+    is_deeply( $plan->{codex_args}, ['--full-auto'], 'execute_start preserves direct codex args without a saved session mapping' );
+    is( $plan->{start_listener}, 1, 'execute_start enables listener startup when autostart is enabled and a token is available' );
+    is( $plan->{listener_session_id}, 'default', 'execute_start falls back to default listener session id when no Codex session is known yet' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $config_root = File::Spec->catdir( $home, '.developer-dashboard', 'config' );
+    make_path($config_root);
+    _write(
+        File::Spec->catfile( $config_root, 'codex.json' ),
+        encode_json(
+            {
+                'DD-276'      => 'session-saved-77',
+                _last_action  => 'Add DD-276',
+                _last_update  => '2026-05-20 21:00:00',
+            }
+        ),
+    );
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            TICKET_REF                      => 'DD-276',
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_ENABLE_AUTOSTART => '1',
+            CODEX_REAL_BIN                  => '/opt/codex/bin/codex-real',
+            TELEGRAM_CODEX_START_CAPTURE    => 1,
+        },
+    );
+    my $plan = $manager->execute_start('--search');
+    is_deeply( $plan->{codex_args}, [ 'resume', 'session-saved-77', '--search' ], 'execute_start preserves the original saved-session resume logic from the dashboard codex launcher' );
+    is( $plan->{mapped_session}, 'session-saved-77', 'execute_start reports the mapped saved session id' );
+    is( $plan->{listener_session_id}, 'session-saved-77', 'execute_start uses the saved session id for listener state when no explicit session id was given' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            TICKET_REF                   => 'DD-276',
+            CODEX_REAL_BIN               => '/opt/codex/bin/codex-real',
+            TELEGRAM_CODEX_START_CAPTURE => 1,
+        },
+    );
+    my $result = $manager->execute_start( 'add', 'session-add-22' );
+    is( $result->{action}, 'add', 'execute_start still supports add mode' );
+    is( $result->{codex_session}, 'session-add-22', 'execute_start add mode preserves the saved-session management behavior' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $config_root = File::Spec->catdir( $home, '.developer-dashboard', 'config' );
+    make_path($config_root);
+    _write(
+        File::Spec->catfile( $config_root, 'codex.json' ),
+        encode_json(
+            {
+                'DD-276'            => 'session-remove-44',
+                'session-remove-44' => 'stale-marker',
+            }
+        ),
+    );
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            TICKET_REF => 'DD-276',
+        },
+    );
+    my $result = $manager->execute_start('remove');
+    is( $result->{action}, 'remove', 'execute_start still supports remove mode' );
+    is( $result->{codex_session}, 'session-remove-44', 'execute_start remove mode uses the saved session mapping' );
+    my $saved = decode_json( $manager->read_text_file( File::Spec->catfile( $config_root, 'codex.json' ) ) );
+    ok( !exists $saved->{'session-remove-44'}, 'execute_start remove mode preserves the original launcher deletion behavior for the saved session key' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $listener_marker = File::Spec->catfile( $home, 'listener-child.log' );
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_ENABLE_AUTOSTART => '1',
+            TELEGRAM_CODEX_RUNTIME_DIR      => $home,
+            CODEX_REAL_BIN                  => '/opt/codex/bin/codex-real',
+        },
+        listener_start_pid => 424242,
+        listener_start_runner => sub {
+            my ( $session_id, $paths ) = @_;
+            open my $fh, '>>', $listener_marker or die $!;
+            print {$fh} "$session_id|$paths->{log_file}\n";
+            close $fh or die $!;
+        },
+    );
+    my $paths = $manager->start_listener_if_needed('session-launch-88');
+    ok( -f $paths->{pid_file}, 'start_listener_if_needed writes a pid file in the session runtime directory' );
+    ok( defined $paths->{log_file} && $paths->{log_file} ne q{}, 'start_listener_if_needed returns the session log path' );
+    is( $manager->read_text_file( $paths->{pid_file} ), "424242\n", 'start_listener_if_needed records the provided listener pid in test mode without forking a real listener' );
+    my $marker = do {
+        open my $fh, '<', $listener_marker or die $!;
+        local $/;
+        <$fh>;
+    };
+    like( $marker, qr/session-launch-88/, 'start_listener_if_needed runs the child listener startup path for the requested session' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $session_dir = File::Spec->catdir( $home, 'session-running-11' );
+    make_path($session_dir);
+    _write( File::Spec->catfile( $session_dir, 'listener.pid' ), "$$\n" );
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            TELEGRAM_CODEX_RUNTIME_DIR => $home,
+        },
+    );
+    my $paths = $manager->start_listener_if_needed('session-running-11');
+    is( $paths->{listener_running}, 1, 'start_listener_if_needed leaves an already-running session listener alone' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $session_dir = File::Spec->catdir( $home, 'session-stale-11' );
+    make_path($session_dir);
+    _write( File::Spec->catfile( $session_dir, 'listener.pid' ), "999999\n" );
+    my $listener_marker = File::Spec->catfile( $home, 'listener-stale.log' );
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            TELEGRAM_CODEX_RUNTIME_DIR => $home,
+        },
+        listener_start_pid => 515151,
+        listener_start_runner => sub {
+            my ( $session_id ) = @_;
+            open my $fh, '>>', $listener_marker or die $!;
+            print {$fh} "$session_id\n";
+            close $fh or die $!;
+        },
+    );
+    my $paths = $manager->start_listener_if_needed('session-stale-11');
+    is( $manager->read_text_file( $paths->{pid_file} ), "515151\n", 'start_listener_if_needed replaces a stale pid file with the new listener pid' );
+    my $marker = do {
+        open my $fh, '<', $listener_marker or die $!;
+        local $/;
+        <$fh>;
+    };
+    is( $marker, "session-stale-11\n", 'start_listener_if_needed relaunches the listener after removing a stale pid file' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $bin_dir = File::Spec->catdir( $home, 'bin' );
+    make_path($bin_dir);
+    my $dashboard_log = File::Spec->catfile( $home, 'dashboard.exec.log' );
+    my $dashboard = File::Spec->catfile( $bin_dir, 'dashboard' );
+    _write( $dashboard, "#!/bin/sh\nprintf '%s\\n' \"\$@\" > \"$dashboard_log\"\nexit 0\n" );
+    chmod 0755, $dashboard or die "Unable to chmod fake dashboard: $!";
+    local $ENV{PATH} = $bin_dir;
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            TELEGRAM_CODEX_RUNTIME_DIR => $home,
+        },
+    );
+    my $paths = $manager->start_listener_if_needed('session-forked-22');
+    waitpid $paths->{pid}, 0 if $paths->{pid};
+    my $exec_log = do {
+        open my $fh, '<', $dashboard_log or die $!;
+        local $/;
+        <$fh>;
+    };
+    is( $exec_log, "telegram-codex.listen\n", 'start_listener_if_needed can fork and exec an isolated fake dashboard listener command without touching Telegram' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $bin_dir = File::Spec->catdir( $home, 'bin' );
+    make_path($bin_dir);
+    my $args_file = File::Spec->catfile( $home, 'real-codex.args' );
+    my $real_codex = File::Spec->catfile( $bin_dir, 'codex-real' );
+    _write( $real_codex, "#!/bin/sh\nprintf '%s\\n' \"\$@\" > \"$args_file\"\nexit 0\n" );
+    chmod 0755, $real_codex or die "Unable to chmod fake real codex: $!";
+    my $pid = fork();
+    die "Unable to fork execute_start real-codex test: $!" if !defined $pid;
+    if ( !$pid ) {
+        my $manager = new_manager(
+            cwd  => $home,
+            home => $home,
+            env  => {
+                CODEX_REAL_BIN => $real_codex,
+            },
+        );
+        $manager->execute_start('--search');
+        exit 91;
+    }
+    waitpid $pid, 0;
+    is( $? >> 8, 0, 'execute_start execs the real codex binary when no Ollama override is set' );
+    my $args = do {
+        open my $fh, '<', $args_file or die $!;
+        local $/;
+        <$fh>;
+    };
+    is( $args, "--search\n", 'execute_start forwards direct codex args to the real codex binary' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $pid = fork();
+    die "Unable to fork execute_start failure test: $!" if !defined $pid;
+    if ( !$pid ) {
+        my $manager = new_manager(
+            cwd  => $home,
+            home => $home,
+            env  => {
+                CODEX_REAL_BIN => File::Spec->catfile( $home, 'definitely-missing-codex' ),
+            },
+        );
+        $manager->execute_start('--search');
+        exit 94;
+    }
+    waitpid $pid, 0;
+    isnt( $? >> 8, 94, 'execute_start reaches the post-exec failure path when the real codex binary cannot be launched' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $bin_dir = File::Spec->catdir( $home, 'bin' );
+    make_path($bin_dir);
+    my $args_file = File::Spec->catfile( $home, 'ollama-default.args' );
+    my $ollama = File::Spec->catfile( $bin_dir, 'ollama' );
+    _write( $ollama, "#!/bin/sh\nprintf '%s\\n' \"\$@\" > \"$args_file\"\nexit 0\n" );
+    chmod 0755, $ollama or die "Unable to chmod fake ollama: $!";
+    local $ENV{PATH} = $bin_dir;
+    my $pid = fork();
+    die "Unable to fork execute_start ollama default test: $!" if !defined $pid;
+    if ( !$pid ) {
+        my $manager = new_manager(
+            cwd  => $home,
+            home => $home,
+            env  => {
+                OLLAMA_MODEL  => '2',
+                CODEX_REAL_BIN => '/opt/codex/bin/codex-real',
+            },
+        );
+        $manager->execute_start('--search');
+        exit 92;
+    }
+    waitpid $pid, 0;
+    is( $? >> 8, 0, 'execute_start supports the OLLAMA_MODEL=2 default-model branch' );
+    my $args = do {
+        open my $fh, '<', $args_file or die $!;
+        local $/;
+        <$fh>;
+    };
+    is( $args, "launch\ncodex\n--model\nqwen3.5:397b-cloud\n", 'execute_start launches the default Ollama model for OLLAMA_MODEL=2' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $bin_dir = File::Spec->catdir( $home, 'bin' );
+    make_path($bin_dir);
+    my $args_file = File::Spec->catfile( $home, 'ollama-custom.args' );
+    my $ollama = File::Spec->catfile( $bin_dir, 'ollama' );
+    _write( $ollama, "#!/bin/sh\nprintf '%s\\n' \"\$@\" > \"$args_file\"\nexit 0\n" );
+    chmod 0755, $ollama or die "Unable to chmod fake ollama: $!";
+    local $ENV{PATH} = $bin_dir;
+    my $pid = fork();
+    die "Unable to fork execute_start ollama custom test: $!" if !defined $pid;
+    if ( !$pid ) {
+        my $manager = new_manager(
+            cwd  => $home,
+            home => $home,
+            env  => {
+                OLLAMA_MODEL  => '1',
+                CODEX_REAL_BIN => '/opt/codex/bin/codex-real',
+            },
+        );
+        $manager->execute_start('resume', 'session-x');
+        exit 93;
+    }
+    waitpid $pid, 0;
+    is( $? >> 8, 0, 'execute_start supports the OLLAMA_MODEL=1 alias branch' );
+    my $args = do {
+        open my $fh, '<', $args_file or die $!;
+        local $/;
+        <$fh>;
+    };
+    is( $args, "launch\ncodex\n--model\nqwen3.5:397b-cloud\n--\nresume\nsession-x\n", 'execute_start expands OLLAMA_MODEL=1 to the default model and preserves codex args' );
 }
 
 {
@@ -421,6 +746,46 @@ sub new_manager {
     is( decode_json( $entries[1] )->{document}{file_name}, 'report.pdf', 'listen logs document metadata in inbox ledger' );
     is( $result->{offset_file}, $offset_file, 'listen reports the session-specific offset path' );
     is( $result->{inbox_file}, $inbox_file, 'listen reports the session-specific inbox path' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @get_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'session-rate-limited',
+        },
+        get_runner => sub {
+            my ( $method, $params ) = @_;
+            push @get_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 55,
+                        message   => {
+                            message_id => 21,
+                            text       => 'hello',
+                            chat       => { id => 88, type => 'private' },
+                        },
+                    },
+                ],
+            } if @get_calls == 1;
+            return { ok => JSON::XS::true, result => [] };
+        },
+        post_runner => sub {
+            die "Telegram POST failed for sendMessage: 429 Too Many Requests\n";
+        },
+    );
+    my $result = $manager->execute_listen( 2, 0, 'listener ack' );
+    is( $result->{processed}, 1, 'listen still records inbound messages when reply send fails' );
+    is( $result->{replied}, 0, 'listen does not count failed reply sends as successful replies' );
+    is( scalar @{ $result->{reply_errors} }, 1, 'listen reports reply-send failures instead of dying before state is saved' );
+    is( $manager->read_text_file( $result->{offset_file} ), "56\n", 'listen still persists the next offset after a reply-send failure so the same message is not retried forever' );
 }
 
 {

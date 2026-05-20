@@ -13,7 +13,7 @@ Use it when a Codex session needs to:
 - send a local photo back to Telegram
 - send a local file back to Telegram as a document
 - keep an always-on long-poll listener running for immediate acknowledgements
-- start Codex through a wrapper that brings the listener up automatically for that session
+- start Codex through the thin launcher chain that reaches `dashboard telegram-codex.start` and brings the listener up automatically for that session
 
 ## Token Discovery
 
@@ -125,6 +125,12 @@ Launch Codex with listener auto-start:
 codex
 ```
 
+Run the skill-owned start path directly:
+
+```bash
+dashboard telegram-codex.start
+```
+
 ## Listener Behavior
 
 `dashboard telegram-codex.listen` or `./cli/listen`:
@@ -145,12 +151,20 @@ codex
   - voice
   - documents/files
 
-The managed `codex` wrapper installed into the user PATH:
+The managed startup chain:
 
+- `codex`
+- `~/.developer-dashboard/cli/codex`
+- `dashboard telegram-codex.start`
+
+The real startup logic in `telegram-codex.start`:
+
+- preserves the original saved-session resume mapping from `TICKET_REF` and `~/.developer-dashboard/config/codex.json`
 - starts the listener automatically before Codex launches
 - keeps one listener per session id
 - persists wrapper-managed pid and log files under `~/.telegram-codex/<session-id>/`
 - primes to the latest Telegram update on the first auto-start when no stored offset exists, so old backlog messages are not auto-replied
+- still advances the stored offset when a reply send fails, so one bad Telegram acknowledgement does not cause repeated message spam
 
 ## Running The Listener
 
@@ -180,6 +194,6 @@ nohup ./cli/listen >/tmp/telegram-codex-listener.log 2>&1 &
 - Do not claim audio or video sending support; only text, photo, and document sending are implemented.
 - Do use the listener when immediate replies are required.
 - Do use a stable `CODEX_SESSION_ID` or `TELEGRAM_CODEX_SESSION_ID` when you want a later Codex session to resume the same Telegram conversation history cleanly.
-- Do launch Codex through the managed `codex` command path when Telegram is meant to be the primary communication channel.
+- Do launch Codex through the managed `codex` command path, or call `dashboard telegram-codex.start` directly, when Telegram is meant to be the primary communication channel.
 - Do expect the first managed auto-start to ignore stale backlog messages and only auto-reply to new inbound messages after the listener offset is primed.
 - Do stop the listener if automatic replies become noisy or unwanted.

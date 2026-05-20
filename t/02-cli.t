@@ -109,10 +109,13 @@ sub capture_run {
 }
 
 {
+    my $cwd = '/tmp/telegram-codex-cli-download';
+    mkdir $cwd if !-d $cwd;
     my ( $rc, $stdout, $stderr ) = capture_run(
         sub {
             my ( $out_fh, $err_fh ) = @_;
             my $manager = Telegram::Codex::Manager->new(
+                cwd             => $cwd,
                 stdout_fh       => $out_fh,
                 stderr_fh       => $err_fh,
                 env             => { TELEGRAM_BOT_TOKEN => 'token-xyz' },
@@ -126,6 +129,9 @@ sub capture_run {
             return $manager->main_download('file-9');
         }
     );
+    unlink "$cwd/downloads/report.txt" if -f "$cwd/downloads/report.txt";
+    rmdir "$cwd/downloads" if -d "$cwd/downloads";
+    rmdir $cwd if -d $cwd;
     is( $rc, 0, 'main_download succeeds' );
     is( $stderr, q{}, 'main_download leaves stderr empty' );
     is( decode_json($stdout)->{bytes}, 5, 'main_download prints download result JSON' );
@@ -207,6 +213,29 @@ sub capture_run {
     is( $rc, 0, 'main_auto_reply_start succeeds' );
     is( $stderr, q{}, 'main_auto_reply_start leaves stderr empty' );
     is( decode_json($stdout)->{checked}, 1, 'main_auto_reply_start prints JSON result' );
+}
+
+{
+    my ( $rc, $stdout, $stderr ) = capture_run(
+        sub {
+            my ( $out_fh, $err_fh ) = @_;
+            my $manager = Telegram::Codex::Manager->new(
+                stdout_fh => $out_fh,
+                stderr_fh => $err_fh,
+                env       => {
+                    TICKET_REF                      => 'DD-276',
+                    TELEGRAM_BOT_TOKEN              => 'token-xyz',
+                    TELEGRAM_CODEX_ENABLE_AUTOSTART => '1',
+                    TELEGRAM_CODEX_START_CAPTURE    => 1,
+                    CODEX_REAL_BIN                  => '/opt/codex/bin/codex-real',
+                },
+            );
+            return $manager->main_start('--search');
+        }
+    );
+    is( $rc, 0, 'main_start succeeds in capture mode' );
+    is( $stderr, q{}, 'main_start leaves stderr empty' );
+    is( decode_json($stdout)->{mode}, 'start', 'main_start prints the start JSON payload' );
 }
 
 {

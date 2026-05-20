@@ -1,3 +1,27 @@
+0.07 2026-05-20
+    - finished the skill-owned `telegram-codex.start` launcher slice with
+      Docker-verified coverage closure for the preserved saved-session and
+      listener startup paths
+    - fixed the listener anti-spam failure mode so a failed Telegram
+      acknowledgement still advances the offset instead of replaying the
+      same inbound message on every restart
+    - kept the generated MCP bridge Python source as a standalone
+      `scripts/telegram_mcp.py` asset instead of embedding it inside Perl
+    - documented the covered-gate handling for the intentional child stdio
+      redirection statements used only inside the background listener fork
+
+0.06 2026-05-20
+    - moved the real Telegram-aware Codex startup flow into
+      `dashboard telegram-codex.start` and `./cli/start`
+    - reduced `~/.developer-dashboard/cli/codex` and the user-PATH `codex`
+      helper to thin handoff launchers into the skill-owned start command
+    - preserved the original saved-session resume mapping from
+      `TICKET_REF` and `~/.developer-dashboard/config/codex.json` inside
+      the skill-owned start logic
+    - added session-scoped listener pid/log paths to the runtime layout
+      and updated the Docker-verified regressions and docs for the merged
+      launcher ownership model
+
 0.05 2026-05-20
     - fixed Codex auto-start integration so `dashboard skills install
       telegram-codex` provisions a managed `codex` wrapper in the user PATH

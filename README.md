@@ -10,7 +10,13 @@ It gives you a governed path to connect Telegram Bot API with Codex so you can p
 
 It now also supports a long-poll listener mode so the bot can stay active and reply immediately without waiting for a manual Codex inbox check.
 
-After `dashboard skills install telegram-codex`, normal `codex` startup uses a managed wrapper from your user PATH, so the listener starts automatically for that Codex session.
+After `dashboard skills install telegram-codex`, the startup chain is:
+
+- `codex`
+- `~/.developer-dashboard/cli/codex`
+- `dashboard telegram-codex.start`
+
+The real Telegram-aware startup logic lives in `telegram-codex.start`, so the listener starts automatically for that Codex session while preserving the original saved-session resume behavior from `TICKET_REF` and `~/.developer-dashboard/config/codex.json`.
 On the first auto-start with no stored offset, it primes to the latest Telegram update and does not auto-reply to old backlog messages.
 
 ## Problem It Solves
@@ -49,6 +55,7 @@ This skill adds:
 - `dashboard telegram-codex.send-document`
 - `dashboard telegram-codex.auto-reply-start`
 - `dashboard telegram-codex.listen`
+- `dashboard telegram-codex.start`
 
 ## Installation
 
@@ -64,12 +71,21 @@ Then install the local Codex plugin bridge with a Telegram bot token:
 dashboard telegram-codex.install 123456:telegram-bot-token
 ```
 
-Normal skill install also provisions a managed `codex` wrapper in the first supported user PATH directory, preferring:
+Normal skill install also provisions:
+
+- a thin `~/.developer-dashboard/cli/codex` launcher that hands off into `dashboard telegram-codex.start`
+- a thin managed `codex` wrapper in the first supported user PATH directory, preferring:
 
 - `~/.local/bin/codex`
 - `~/bin/codex`
 
-That managed wrapper starts the Telegram listener automatically for future Codex sessions when `TELEGRAM_BOT_TOKEN` is available.
+The managed wrapper hands off into `~/.developer-dashboard/cli/codex`, and `telegram-codex.start` then:
+
+- preserves the original saved-session resume mapping from `TICKET_REF`
+- starts the Telegram listener automatically when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CODEX_ENABLE_AUTOSTART=1` are available
+- keeps reply-send failures from replaying the same Telegram update forever by still advancing the stored offset
+- execs the real Codex binary afterward
+
 On the first auto-start with no stored offset, it primes to the latest Telegram update so old backlog messages are not auto-replied.
 
 After install, regular commands can discover `TELEGRAM_BOT_TOKEN` automatically from:
@@ -96,6 +112,7 @@ Run the local skill entrypoints directly from this repo:
 ```bash
 cd ~/projects/skills/skills/telegram-codex
 ./cli/install 123456:telegram-bot-token
+./cli/start
 ./cli/get-me
 ./cli/updates
 ./cli/auto-reply-start
@@ -164,10 +181,18 @@ Launch Codex with automatic Telegram listener startup:
 codex
 ```
 
+Run the skill-owned startup flow directly:
+
+```bash
+dashboard telegram-codex.start
+```
+
 By default the listener keeps runtime state under:
 
 - `~/.telegram-codex/<codex-session-id>/listener.offset`
 - `~/.telegram-codex/<codex-session-id>/listener.inbox.jsonl`
+- `~/.telegram-codex/<codex-session-id>/listener.pid`
+- `~/.telegram-codex/<codex-session-id>/listener.log`
 
 Session id resolution order is:
 
@@ -209,7 +234,7 @@ Use `dashboard telegram-codex.listen` when you want immediate bot acknowledgemen
 ```
 
 ```text
-Use `codex` after `dashboard skills install telegram-codex` when you want Codex startup itself to bring the Telegram listener up automatically for the current session.
+Use `codex` after `dashboard skills install telegram-codex` when you want the thin launcher chain to reach `dashboard telegram-codex.start`, preserve any saved ticket-to-session mapping, and bring the Telegram listener up automatically for the current session.
 ```
 
 ```text

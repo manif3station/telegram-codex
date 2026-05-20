@@ -14,7 +14,12 @@ dashboard telegram-codex.install 123456:telegram-bot-token
 
 That command writes the `telegram-codex` local plugin, the stdio MCP server config, the plugin-local `.env` with the bot token, and the marketplace entry that exposes the plugin to Codex.
 
-Normal `dashboard skills install telegram-codex` also provisions a managed `codex` wrapper in the first supported user PATH directory, preferring `~/.local/bin/codex` and then `~/bin/codex`.
+Normal `dashboard skills install telegram-codex` also provisions:
+
+- `~/.developer-dashboard/cli/codex` as a thin handoff launcher into `dashboard telegram-codex.start`
+- a managed `codex` wrapper in the first supported user PATH directory, preferring `~/.local/bin/codex` and then `~/bin/codex`
+
+The managed `codex` wrapper only hands off into `~/.developer-dashboard/cli/codex`. The real startup logic lives in `dashboard telegram-codex.start`.
 
 After install, the regular commands can discover `TELEGRAM_BOT_TOKEN` automatically from the current project `.env`, a parent/root `.env`, the skill `.env`, or the live process environment.
 
@@ -31,12 +36,20 @@ cd ~/projects/skills/skills/telegram-codex
 codex
 ```
 
-That wrapper starts one `telegram-codex` listener per Codex session when:
+Or run the skill-owned start path directly:
+
+```bash
+dashboard telegram-codex.start
+```
+
+`telegram-codex.start` starts one `telegram-codex` listener per Codex session when:
 
 - `TELEGRAM_BOT_TOKEN` is available
-- `CODEX_SESSION_ID` or `TELEGRAM_CODEX_SESSION_ID` is available
+- `TELEGRAM_CODEX_ENABLE_AUTOSTART=1`
 
 On the first auto-start with no stored listener offset, it primes to the latest Telegram update and waits for new messages instead of replying to older backlog items.
+
+It also preserves the original saved-session resume logic from `~/.developer-dashboard/config/codex.json` when `TICKET_REF` points to a stored Codex session id.
 
 It records wrapper-managed listener state under:
 
@@ -132,6 +145,8 @@ The listener sends an immediate text acknowledgement for inbound:
 - audio
 - voice
 - documents/files
+
+If Telegram rejects a reply, for example with a rate-limit error, the listener still advances the stored offset and records the reply failure instead of replaying the same inbound message forever on the next start.
 
 For a controlled one-cycle check:
 
