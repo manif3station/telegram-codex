@@ -12,7 +12,7 @@ Use it when a Codex session needs to:
 - send a text reply back to the same chat
 - send a local photo back to Telegram
 - send a local file back to Telegram as a document
-- keep an always-on long-poll listener running for immediate acknowledgements
+- keep an always-on long-poll listener running for two-way Telegram communication
 - start Codex through the thin launcher chain that reaches `dashboard telegram-codex.start` and brings the listener up automatically for that session
 
 ## Token Discovery
@@ -144,6 +144,7 @@ dashboard telegram-codex.start
   - `CODEX_SESSION_ID`
   - `default`
 - recovers the next offset from the inbox ledger when `listener.offset` is missing
+- advances to the newer inbox-ledger offset when the stored offset falls behind
 - skips any returned update older than the next stored offset so stale Telegram backlog is not re-acknowledged again
 - does not send any Telegram reply by default
 - sends an acknowledgement for inbound only when an explicit reply text is passed:
@@ -167,7 +168,9 @@ The real startup logic in `telegram-codex.start`:
 - keeps one listener per session id
 - persists wrapper-managed pid and log files under `~/.telegram-codex/<session-id>/`
 - primes to the latest Telegram update on the first auto-start when no stored offset exists, so old backlog messages are not auto-replied
+- sends the concise acknowledgement `Message received. Codex is active here.` for each new inbound Telegram message after the prime step
 - still advances the stored offset when a reply send fails, so one bad Telegram acknowledgement does not cause repeated message spam
+- retries after transient `getUpdates` transport failures instead of dropping the listener immediately
 
 ## Running The Listener
 

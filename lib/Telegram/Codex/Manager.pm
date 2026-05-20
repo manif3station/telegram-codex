@@ -29,6 +29,7 @@ sub new {
         download_runner      => $args{download_runner},
         listener_start_runner => $args{listener_start_runner},
         listener_start_pid   => $args{listener_start_pid},
+        sleep_runner         => $args{sleep_runner},
     }, $class;
     $self->{env} = $args{env} || $self->_merged_env;
     $self->{ua} = $args{ua} || $self->_build_ua;
@@ -135,7 +136,7 @@ sub execute_start {
     my $plan = $self->codex_start_plan( $config, @argv );
     return $plan if $self->env_value('TELEGRAM_CODEX_START_CAPTURE');
 
-    $self->start_listener_if_needed( $plan->{listener_session_id} ) if $plan->{start_listener};
+    $self->start_listener_if_needed( $plan->{listener_session_id}, $plan->{listener_reply_text} ) if $plan->{start_listener};
 
     if ( my $ollama_model = $self->env_value('OLLAMA_MODEL') ) {
         my $default_model = 'qwen3.5:397b-cloud';
@@ -291,8 +292,9 @@ sub execute_listen {
     my $paths = $self->listener_paths;
     make_path( $paths->{runtime_dir} ) if !-d $paths->{runtime_dir};
     my $offset = $self->read_listener_offset( $paths->{offset_file} );
-    if ( !defined $offset ) {
-        $offset = $self->recover_listener_offset_from_inbox( $paths->{inbox_file} );
+    my $recovered_offset = $self->recover_listener_offset_from_inbox( $paths->{inbox_file} );
+    if ( defined $recovered_offset ) {
+        $offset = !defined $offset || $recovered_offset > $offset ? $recovered_offset : $offset;
     }
     my $prime_latest = ( $self->env_value('TELEGRAM_CODEX_LISTENER_PRIME_LATEST') || q{} ) =~ /\A(?:1|true|yes|on)\z/i ? 1 : 0;
     if ( !defined $offset && $prime_latest ) {
@@ -318,6 +320,7 @@ sub execute_listen {
     my $processed = 0;
     my $replied = 0;
     my @reply_errors;
+    my @get_errors;
 
     while (1) {
         my %params = (
@@ -325,7 +328,18 @@ sub execute_listen {
             timeout => $poll_timeout,
         );
         $params{offset} = $offset if defined $offset;
-        my $result = $self->telegram_get( 'getUpdates', \%params );
+        my $result = eval { $self->telegram_get( 'getUpdates', \%params ) };
+        if ( my $error = $@ ) {
+            chomp $error;
+            push @get_errors, {
+                cycle => $cycles,
+                error => $error,
+            };
+            $cycles++;
+            last if defined $max_cycles && $cycles >= $max_cycles;
+            $self->listener_pause_seconds(1);
+            next;
+        }
         my @updates = @{ $result->{result} || [] };
         for my $update (@updates) {
             my $update_id = $update->{update_id};
@@ -373,6 +387,7 @@ sub execute_listen {
         cycles     => $cycles,
         processed  => $processed,
         replied    => $replied,
+        get_errors   => \@get_errors,
         reply_errors => \@reply_errors,
         next_offset => $offset,
         offset_file => $paths->{offset_file},
@@ -580,11 +595,12 @@ sub codex_start_plan {
         real_codex_bin      => $self->resolve_real_codex_bin( $self->codex_launcher_paths ),
         start_listener      => ( $self->env_value('TELEGRAM_BOT_TOKEN') && ( $self->env_value('TELEGRAM_CODEX_ENABLE_AUTOSTART') || q{} ) eq '1' ) ? 1 : 0,
         listener_session_id => $listener_session_id,
+        listener_reply_text => $self->managed_listener_reply_text,
     };
 }
 
 sub start_listener_if_needed {
-    my ( $self, $session_id ) = @_;
+    my ( $self, $session_id, $reply_text ) = @_;
     my $paths = $self->listener_paths_for_session($session_id);
     make_path( $paths->{runtime_dir} ) if !-d $paths->{runtime_dir};
     if ( -f $paths->{pid_file} ) {
@@ -602,7 +618,7 @@ sub start_listener_if_needed {
 
     if ( $self->{listener_start_runner} ) {
         my $pid = defined $self->{listener_start_pid} ? $self->{listener_start_pid} : $$;
-        $self->{listener_start_runner}->( $session_id, $paths );
+        $self->{listener_start_runner}->( $session_id, $paths, $reply_text );
         $self->write_text_file( $paths->{pid_file}, "$pid\n" );
         return {
             listener_running    => 0,
@@ -620,7 +636,9 @@ sub start_listener_if_needed {
         open STDERR, '>>', $paths->{log_file} or die "Unable to reopen stderr: $!"; # uncoverable statement
         $ENV{TELEGRAM_CODEX_SESSION_ID} = $session_id;
         $ENV{TELEGRAM_CODEX_LISTENER_PRIME_LATEST} = 1;
-        my $exit = system( 'dashboard', 'telegram-codex.listen' );
+        my @command = ( 'dashboard', 'telegram-codex.listen', 0, 30 );
+        push @command, $reply_text if defined $reply_text && $reply_text ne q{};
+        my $exit = system(@command);
         exit( $exit == -1 ? 1 : ( $exit >> 8 ) );
     }
 
@@ -918,6 +936,23 @@ sub recover_listener_offset_from_inbox {
     return undef;
 }
 
+sub managed_listener_reply_text {
+    my ($self) = @_;
+    my $reply_text = $self->env_value('TELEGRAM_CODEX_START_REPLY_TEXT');
+    return $reply_text if defined $reply_text && $reply_text ne q{};
+    return 'Message received. Codex is active here.';
+}
+
+sub listener_pause_seconds {
+    my ( $self, $seconds ) = @_;
+    $seconds = 1 if !defined $seconds;
+    if ( $self->{sleep_runner} ) {
+        return $self->{sleep_runner}->($seconds);
+    }
+    select undef, undef, undef, $seconds;
+    return $seconds;
+}
+
 sub append_inbox_entry {
     my ( $self, $path, $entry ) = @_;
     make_path( dirname($path) ) if !-d dirname($path);
@@ -998,7 +1033,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.09',
+        agent   => 'telegram-codex/0.10',
         timeout => 60,
     );
     return $ua;

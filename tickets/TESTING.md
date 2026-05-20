@@ -37,6 +37,13 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
   - `Files=6, Tests=212`
   - `lib/Telegram/Codex/Manager.pm` statement `100.0`
   - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Docker functional gate for `DD-279`:
+  - `Files=6, Tests=223`
+  - `Result: PASS`
+- Docker covered gate for `DD-279`:
+  - `Files=6, Tests=223`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
 - Docker listener gate:
   - `Files=6, Tests=181`
   - listener state, session-specific runtime paths, inbox ledger, wrapper executability, thin-launcher generation, preserved saved-session resume mapping, no-backlog first auto-start behavior, `.env` discovery paths, and audio/video/voice reply eligibility are covered
@@ -47,6 +54,10 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
   - Docker now covers skipping returned updates older than the current next offset so stale Telegram backlog is not appended or auto-replied again
 - Passive listener regression:
   - listener no longer sends the placeholder `queued for Codex` reply unless an explicit reply text is passed
+- Managed start two-way regression:
+  - `dashboard telegram-codex.start` now launches the listener with the concise acknowledgement `Message received. Codex is active here.`
+  - transient `getUpdates` transport failures are retried instead of killing the listener immediately
+  - stale stored offsets are clamped up to the newer inbox-ledger offset so duplicated older Telegram updates are not replayed
 - Earlier covered gate:
   - `lib/Telegram/Codex/Manager.pm` statement `100.0`
   - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`

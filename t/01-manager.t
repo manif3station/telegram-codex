@@ -56,6 +56,7 @@ sub new_manager {
         download_runner => $args{download_runner},
         listener_start_runner => $args{listener_start_runner},
         listener_start_pid    => $args{listener_start_pid},
+        sleep_runner         => $args{sleep_runner},
     );
 }
 
@@ -350,6 +351,7 @@ sub new_manager {
     is_deeply( $plan->{codex_args}, ['--full-auto'], 'execute_start preserves direct codex args without a saved session mapping' );
     is( $plan->{start_listener}, 1, 'execute_start enables listener startup when autostart is enabled and a token is available' );
     is( $plan->{listener_session_id}, 'default', 'execute_start falls back to default listener session id when no Codex session is known yet' );
+    is( $plan->{listener_reply_text}, 'Message received. Codex is active here.', 'execute_start plans a concise Telegram acknowledgement reply for managed startup' );
 }
 
 {
@@ -440,13 +442,13 @@ sub new_manager {
         },
         listener_start_pid => 424242,
         listener_start_runner => sub {
-            my ( $session_id, $paths ) = @_;
+            my ( $session_id, $paths, $reply_text ) = @_;
             open my $fh, '>>', $listener_marker or die $!;
-            print {$fh} "$session_id|$paths->{log_file}\n";
+            print {$fh} "$session_id|$paths->{log_file}|$reply_text\n";
             close $fh or die $!;
         },
     );
-    my $paths = $manager->start_listener_if_needed('session-launch-88');
+    my $paths = $manager->start_listener_if_needed( 'session-launch-88', 'Message received. Codex is active here.' );
     ok( -f $paths->{pid_file}, 'start_listener_if_needed writes a pid file in the session runtime directory' );
     ok( defined $paths->{log_file} && $paths->{log_file} ne q{}, 'start_listener_if_needed returns the session log path' );
     is( $manager->read_text_file( $paths->{pid_file} ), "424242\n", 'start_listener_if_needed records the provided listener pid in test mode without forking a real listener' );
@@ -456,6 +458,7 @@ sub new_manager {
         <$fh>;
     };
     like( $marker, qr/session-launch-88/, 'start_listener_if_needed runs the child listener startup path for the requested session' );
+    like( $marker, qr/Message received\. Codex is active here\./, 'start_listener_if_needed passes the managed startup reply text into the listener launch path' );
 }
 
 {
@@ -520,14 +523,14 @@ sub new_manager {
             TELEGRAM_CODEX_RUNTIME_DIR => $home,
         },
     );
-    my $paths = $manager->start_listener_if_needed('session-forked-22');
+    my $paths = $manager->start_listener_if_needed( 'session-forked-22', 'Message received. Codex is active here.' );
     waitpid $paths->{pid}, 0 if $paths->{pid};
     my $exec_log = do {
         open my $fh, '<', $dashboard_log or die $!;
         local $/;
         <$fh>;
     };
-    is( $exec_log, "telegram-codex.listen\n", 'start_listener_if_needed can fork and exec an isolated fake dashboard listener command without touching Telegram' );
+    is( $exec_log, "telegram-codex.listen\n0\n30\nMessage received. Codex is active here.\n", 'start_listener_if_needed can fork and exec an isolated fake dashboard listener command with the managed startup reply text' );
 }
 
 {
@@ -790,6 +793,61 @@ sub new_manager {
 
 {
     my $runtime = tempdir( CLEANUP => 1 );
+    my @sleep_calls;
+    my $get_call_count = 0;
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'session-get-retry',
+        },
+        get_runner => sub {
+            my ( $method, $params ) = @_;
+            $get_call_count++;
+            die "Telegram GET failed for getUpdates: 500 Status read failed: Connection reset by peer\n" if $get_call_count == 1;
+            return {
+                ok     => JSON::XS::true,
+                result => $get_call_count == 2
+                  ? [
+                        {
+                            update_id => 71,
+                            message   => {
+                                message_id => 10,
+                                text       => 'hello',
+                                chat       => { id => 88, type => 'private' },
+                            },
+                        },
+                    ]
+                  : [],
+            };
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 400 + scalar @post_calls, chat => { id => $params->{chat_id} } },
+            };
+        },
+        sleep_runner => sub {
+            my ($seconds) = @_;
+            push @sleep_calls, $seconds;
+        },
+    );
+    my $result = $manager->execute_listen( 3, 0, 'listener ack' );
+    is( $result->{processed}, 1, 'listen survives a transient getUpdates transport failure and still processes later messages' );
+    is( $result->{replied}, 1, 'listen still replies after recovering from a transient getUpdates transport failure' );
+    is( scalar @{ $result->{get_errors} }, 1, 'listen reports the transient getUpdates transport failure' );
+    is( $result->{get_errors}[0]{cycle}, 0, 'listen records the failed cycle index for the transient getUpdates transport failure' );
+    is( scalar @sleep_calls, 1, 'listen pauses once before retrying after a transient getUpdates transport failure' );
+    is( $manager->read_text_file( $result->{offset_file} ), "72\n", 'listen still advances and persists the next offset after recovering from a transient getUpdates transport failure' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
     my @get_calls;
     my @post_calls;
     my $manager = new_manager(
@@ -932,6 +990,40 @@ sub new_manager {
     my $result = $manager->execute_listen( 1, 0, 'listener ack' );
     is( $result->{processed}, 0, 'listen can recover an offset from the inbox ledger when the offset file is missing' );
     is( $get_calls[0][1]{offset}, 122, 'listen resumes from the recovered next offset when only the inbox ledger exists' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $session_dir = File::Spec->catdir( $runtime, 'session-recover-newer' );
+    mkdir $session_dir;
+    _write( File::Spec->catfile( $session_dir, 'listener.offset' ), "50\n" );
+    _write(
+        File::Spec->catfile( $session_dir, 'listener.inbox.jsonl' ),
+        join(
+            "\n",
+            encode_json( { update_id => 120, text => 'old-1' } ),
+            encode_json( { update_id => 121, text => 'old-2' } ),
+            q{},
+        ),
+    );
+    my @get_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'session-recover-newer',
+        },
+        get_runner => sub {
+            my ( $method, $params ) = @_;
+            push @get_calls, [ $method, $params ];
+            return { ok => JSON::XS::true, result => [] };
+        },
+    );
+    my $result = $manager->execute_listen( 1, 0, 'listener ack' );
+    is( $result->{processed}, 0, 'listen handles stale stored offsets cleanly when the inbox ledger proves a newer offset' );
+    is( $get_calls[0][1]{offset}, 122, 'listen advances to the newer recovered inbox offset instead of replaying from an older stored offset' );
 }
 
 {
@@ -1113,6 +1205,11 @@ sub new_manager {
     make_path( File::Spec->catdir( $home, 'mirror' ) );
     my @targets = $manager->plugin_targets;
     is( scalar @targets, 2, 'plugin targets include mirror path when mirror base exists' );
+}
+
+{
+    my $manager = new_manager;
+    is( $manager->listener_pause_seconds(0), 0, 'listener_pause_seconds returns after the direct sleep path without requiring an injected sleep runner' );
 }
 
 {

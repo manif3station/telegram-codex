@@ -1,3 +1,13 @@
+0.10 2026-05-20
+    - made `dashboard telegram-codex.start` launch the listener in a stable
+      two-way mode with a concise one-line Telegram acknowledgement for new
+      inbound messages instead of the old passive startup behavior
+    - kept direct `telegram-codex.listen` passive by default unless an
+      explicit reply text is passed
+    - made the listener survive transient `getUpdates` transport failures and
+      clamp stale stored offsets up to the newer inbox-ledger offset so
+      duplicated older Telegram updates are not replayed
+
 0.09 2026-05-20
     - removed the listener's default placeholder auto-reply so
       `telegram-codex.listen` now captures inbound Telegram updates by

@@ -48,6 +48,11 @@ dashboard telegram-codex.start
 - `TELEGRAM_CODEX_ENABLE_AUTOSTART=1`
 
 On the first auto-start with no stored listener offset, it primes to the latest Telegram update and waits for new messages instead of replying to older backlog items.
+After that first prime step, managed startup sends one concise acknowledgement reply for each new inbound Telegram message:
+
+```text
+Message received. Codex is active here.
+```
 
 It also preserves the original saved-session resume logic from `~/.developer-dashboard/config/codex.json` when `TICKET_REF` points to a stored Codex session id.
 
@@ -131,6 +136,7 @@ dashboard telegram-codex.listen
 
 That command long-polls Telegram, appends inbound message summaries to `~/.telegram-codex/<session-id>/listener.inbox.jsonl`, and persists the next Telegram offset in `~/.telegram-codex/<session-id>/listener.offset`.
 If `listener.offset` is missing but the inbox ledger exists, the listener recovers the next offset from the latest inbox entry and skips any returned update older than that recovered offset.
+If the stored offset is older than the inbox-ledger offset, the listener now advances to the newer inbox-ledger offset instead of replaying duplicated older Telegram updates.
 By default it does not send a Telegram reply. It only captures inbound activity unless you pass an explicit reply text.
 
 Session id resolution order is:
@@ -149,6 +155,7 @@ When you pass an explicit reply text, the listener can send an acknowledgement f
 - documents/files
 
 If Telegram rejects a reply, for example with a rate-limit error, the listener still advances the stored offset and records the reply failure instead of replaying the same inbound message forever on the next start.
+If Telegram `getUpdates` hits a transient transport failure, the listener records the error, pauses briefly, and continues listening instead of exiting immediately.
 
 For a passive one-cycle check:
 
