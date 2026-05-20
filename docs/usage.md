@@ -3,7 +3,7 @@
 ## Install The Skill
 
 ```bash
-dashboard skills install ~/projects/skills/skills/telegram-codex
+dashboard skills install telegram-codex
 ```
 
 ## Install The Local Codex Telegram Plugin
@@ -14,6 +14,8 @@ dashboard telegram-codex.install 123456:telegram-bot-token
 
 That command writes the `telegram-codex` local plugin, the stdio MCP server config, the plugin-local `.env` with the bot token, and the marketplace entry that exposes the plugin to Codex.
 
+It also writes a Codex launcher wrapper to `~/.developer-dashboard/cli/codex`.
+
 After install, the regular commands can discover `TELEGRAM_BOT_TOKEN` automatically from the current project `.env`, a parent/root `.env`, the skill `.env`, or the live process environment.
 
 The same behavior is available directly from the skill checkout:
@@ -22,6 +24,24 @@ The same behavior is available directly from the skill checkout:
 cd ~/projects/skills/skills/telegram-codex
 ./cli/install 123456:telegram-bot-token
 ```
+
+## Start Codex With Automatic Telegram Listener Startup
+
+```bash
+~/.developer-dashboard/cli/codex
+```
+
+That wrapper starts one `telegram-codex` listener per Codex session when:
+
+- `TELEGRAM_BOT_TOKEN` is available
+- `CODEX_SESSION_ID` or `TELEGRAM_CODEX_SESSION_ID` is available
+
+It records wrapper-managed listener state under:
+
+- `~/.telegram-codex/<session-id>/listener.pid`
+- `~/.telegram-codex/<session-id>/listener.log`
+- `~/.telegram-codex/<session-id>/listener.offset`
+- `~/.telegram-codex/<session-id>/listener.inbox.jsonl`
 
 ## Inspect The Bot Identity
 

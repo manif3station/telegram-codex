@@ -1,3 +1,13 @@
+0.04 2026-05-20
+    - fixed the install docs to use `dashboard skills install telegram-codex`
+      instead of a checkout path
+    - made `dashboard telegram-codex.install` also write a `codex` launcher
+      wrapper under `~/.developer-dashboard/cli/` that starts the Telegram
+      listener automatically for the active Codex session before execing the
+      real Codex binary
+    - added Docker-verified regressions for the generated Codex wrapper,
+      including session pid/log paths and real-binary handoff
+
 0.03 2026-05-20
     - partitioned listener runtime state by Codex session id under
       `~/.telegram-codex/<session-id>/` so each Codex session keeps its own

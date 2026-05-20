@@ -16,15 +16,15 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 ## Latest Evidence
 
 - Docker functional gate:
-  - `Files=6, Tests=136`
+  - `Files=6, Tests=145`
   - `Result: PASS`
 - Docker covered gate:
   - `lib/Telegram/Codex/Manager.pm` statement `100.0`
   - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
   - listener runtime partitioning by Codex session id is covered
 - Docker listener gate:
-  - `Files=6, Tests=136`
-  - listener state, session-specific runtime paths, inbox ledger, wrapper executability, `.env` discovery paths, and audio/video/voice reply eligibility are covered
+  - `Files=6, Tests=145`
+  - listener state, session-specific runtime paths, inbox ledger, wrapper executability, Codex launcher autostart wrapper generation, `.env` discovery paths, and audio/video/voice reply eligibility are covered
 - Live Telegram proof on 2026-05-20:
   - `./cli/install` created the plugin under `~/.codex/.tmp/plugins/plugins/telegram-codex` and the mirror root when present
   - `./cli/get-me` resolved the configured bot identity successfully

@@ -66,6 +66,7 @@ sub new_manager {
         env  => {
             CODEX_PRIMARY_PLUGIN_ROOT      => '~/.codex/.tmp/plugins/plugins',
             CODEX_PRIMARY_MARKETPLACE_PATH => '~/.codex/.tmp/plugins/.agents/plugins/marketplace.json',
+            CODEX_REAL_BIN                 => '/opt/codex/bin/codex-real',
             TELEGRAM_BOT_TOKEN             => 'token-123',
         },
     );
@@ -78,6 +79,14 @@ sub new_manager {
     ok( -f File::Spec->catfile( $plugin_dir, 'scripts', 'telegram_mcp.py' ), 'install writes mcp server script' );
     my $market_data = decode_json( $manager->read_text_file($marketplace) );
     is( $market_data->{plugins}[0]{name}, 'telegram-codex', 'install registers plugin in marketplace' );
+    is( $result->{codex_wrapper}{real_codex_path}, '/opt/codex/bin/codex-real', 'install records the wrapped real codex binary path' );
+    my $wrapper_path = File::Spec->catfile( $home, '.developer-dashboard', 'cli', 'codex' );
+    ok( -f $wrapper_path, 'install writes the codex startup wrapper' );
+    my $wrapper = $manager->read_text_file($wrapper_path);
+    like( $wrapper, qr/dashboard telegram-codex\.listen/, 'wrapper starts the telegram listener through the dashboard command surface' );
+    like( $wrapper, qr/listener\.pid/, 'wrapper persists a per-session listener pid file' );
+    like( $wrapper, qr/listener\.log/, 'wrapper persists a per-session listener log file' );
+    like( $wrapper, qr/exec "\$REAL_CODEX_BIN" "\$@"/, 'wrapper execs the real codex binary after listener bootstrap' );
 }
 
 {
@@ -235,6 +244,63 @@ sub new_manager {
     );
     my $paths = $manager->listener_paths;
     is( $paths->{runtime_dir}, File::Spec->catdir( $runtime, 'session-explicit' ), 'listener_paths prefers TELEGRAM_CODEX_SESSION_ID when both session variables exist' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $bin_dir = File::Spec->catdir( $home, 'bin' );
+    make_path($bin_dir);
+    my $real_codex = File::Spec->catfile( $bin_dir, 'codex' );
+    _write( $real_codex, "#!/bin/sh\nexit 0\n" );
+    chmod 0755, $real_codex or die "Unable to chmod fake codex: $!";
+    local $ENV{PATH} = $bin_dir;
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            TELEGRAM_BOT_TOKEN => 'token-xyz',
+        },
+    );
+    my $paths = $manager->codex_wrapper_paths;
+    is( $manager->resolve_real_codex_bin($paths), $real_codex, 'resolve_real_codex_bin detects the current codex binary from PATH' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $cli_root = File::Spec->catdir( $home, '.developer-dashboard', 'cli' );
+    make_path($cli_root);
+    my $wrapper_path = File::Spec->catfile( $cli_root, 'codex' );
+    my $stored_real  = '/opt/codex/bin/codex-real';
+    _write( File::Spec->catfile( $cli_root, '.telegram-codex-codex-real-bin' ), "$stored_real\n" );
+    _write( $wrapper_path, "#!/bin/sh\nexit 0\n" );
+    chmod 0755, $wrapper_path or die "Unable to chmod stored wrapper: $!";
+    local $ENV{PATH} = $cli_root;
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            TELEGRAM_BOT_TOKEN => 'token-xyz',
+        },
+    );
+    my $paths = $manager->codex_wrapper_paths;
+    is( $manager->resolve_real_codex_bin($paths), $stored_real, 'resolve_real_codex_bin falls back to the stored real codex path when PATH resolves the wrapper itself' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $cli_root = File::Spec->catdir( $home, '.developer-dashboard', 'cli' );
+    make_path($cli_root);
+    local $ENV{PATH} = $cli_root;
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            TELEGRAM_BOT_TOKEN => 'token-xyz',
+        },
+    );
+    my $paths = $manager->codex_wrapper_paths;
+    my $error = eval { $manager->resolve_real_codex_bin($paths); 1 } ? q{} : $@;
+    like( $error, qr/Unable to resolve the real codex binary path/, 'resolve_real_codex_bin fails explicitly when no real codex binary path can be found' );
 }
 
 {

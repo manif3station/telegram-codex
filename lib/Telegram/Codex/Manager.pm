@@ -73,10 +73,12 @@ sub execute_install {
             token            => $token,
         );
     }
+    my $codex_wrapper = $self->install_codex_wrapper;
     return {
         mode      => 'install',
         plugin    => 'telegram-codex',
         installed => \@installed,
+        codex_wrapper => $codex_wrapper,
     };
 }
 
@@ -288,6 +290,24 @@ sub plugin_targets {
     return @targets;
 }
 
+sub install_codex_wrapper {
+    my ($self) = @_;
+    my $paths = $self->codex_wrapper_paths;
+    my $real_codex_path = $self->resolve_real_codex_bin($paths);
+    $self->write_text_file( $paths->{real_bin_file}, $real_codex_path . "\n" );
+    my $script = $self->codex_wrapper_script(
+        real_codex_path => $real_codex_path,
+        real_bin_file   => $paths->{real_bin_file},
+    );
+    $self->write_text_file( $paths->{wrapper_path}, $script );
+    chmod 0700, $paths->{wrapper_path};
+    return {
+        wrapper_path     => $paths->{wrapper_path},
+        real_codex_path  => $real_codex_path,
+        real_bin_file    => $paths->{real_bin_file},
+    };
+}
+
 sub scaffold_plugin {
     my ( $self, %args ) = @_;
     my $plugin_root = $args{plugin_root};
@@ -387,6 +407,10 @@ The bot token is loaded from the plugin-local `.env` file.
 For immediate bot replies outside manual Codex polling, run the skill listener:
 
 - `dashboard telegram-codex.listen`
+
+For automatic listener startup when Codex launches, use the installed wrapper:
+
+- `~/.developer-dashboard/cli/codex`
 EOF
 }
 
@@ -749,6 +773,82 @@ if __name__ == "__main__":
 EOF
 }
 
+sub codex_wrapper_paths {
+    my ($self) = @_;
+    my $cli_root = $self->resolve_path('~/.developer-dashboard/cli');
+    return {
+        cli_root       => $cli_root,
+        wrapper_path   => File::Spec->catfile( $cli_root, 'codex' ),
+        real_bin_file  => File::Spec->catfile( $cli_root, '.telegram-codex-codex-real-bin' ),
+    };
+}
+
+sub resolve_real_codex_bin {
+    my ( $self, $paths ) = @_;
+    my $explicit = $self->env_value('CODEX_REAL_BIN');
+    return $explicit if defined $explicit && $explicit ne q{};
+
+    my $detected = qx{command -v codex 2>/dev/null};
+    chomp $detected;
+    my $wrapper_path = $paths->{wrapper_path};
+    if ( defined $detected && $detected ne q{} && $detected ne $wrapper_path ) {
+        return $detected;
+    }
+    if ( -f $paths->{real_bin_file} ) {
+        my $stored = $self->read_text_file( $paths->{real_bin_file} );
+        $stored =~ s/\s+\z//;
+        return $stored if $stored ne q{};
+    }
+    die "Unable to resolve the real codex binary path\n";
+}
+
+sub codex_wrapper_script {
+    my ( $self, %args ) = @_;
+    my $real_codex_path = $args{real_codex_path};
+    my $real_bin_file = $args{real_bin_file};
+    return <<"EOF";
+#!/bin/sh
+set -eu
+
+REAL_CODEX_BIN=\${CODEX_REAL_BIN:-$real_codex_path}
+if [ -z "\$REAL_CODEX_BIN" ] && [ -f "$real_bin_file" ]; then
+  REAL_CODEX_BIN=\$(cat "$real_bin_file")
+fi
+if [ -z "\$REAL_CODEX_BIN" ]; then
+  echo "Unable to resolve the real codex binary path" >&2
+  exit 1
+fi
+
+if [ -n "\${TELEGRAM_BOT_TOKEN:-}" ]; then
+  SESSION_ID="\${TELEGRAM_CODEX_SESSION_ID:-\${CODEX_SESSION_ID:-default}}"
+  SESSION_DIR="\$HOME/.telegram-codex/\$SESSION_ID"
+  PID_FILE="\$SESSION_DIR/listener.pid"
+  LOG_FILE="\$SESSION_DIR/listener.log"
+  mkdir -p "\$SESSION_DIR"
+
+  LISTENER_RUNNING=0
+  if [ -f "\$PID_FILE" ]; then
+    EXISTING_PID=\$(cat "\$PID_FILE" 2>/dev/null || true)
+    if [ -n "\$EXISTING_PID" ] && kill -0 "\$EXISTING_PID" 2>/dev/null; then
+      LISTENER_RUNNING=1
+    else
+      rm -f "\$PID_FILE"
+    fi
+  fi
+
+  if [ "\$LISTENER_RUNNING" -ne 1 ]; then
+    (
+      export TELEGRAM_CODEX_SESSION_ID="\$SESSION_ID"
+      nohup dashboard telegram-codex.listen >>"\$LOG_FILE" 2>&1 &
+      echo \$! >"\$PID_FILE"
+    )
+  fi
+fi
+
+exec "\$REAL_CODEX_BIN" "\$@"
+EOF
+}
+
 sub update_marketplace {
     my ( $self, $path ) = @_;
     my $data;
@@ -998,7 +1098,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.03',
+        agent   => 'telegram-codex/0.04',
         timeout => 60,
     );
     return $ua;

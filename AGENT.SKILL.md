@@ -13,6 +13,7 @@ Use it when a Codex session needs to:
 - send a local photo back to Telegram
 - send a local file back to Telegram as a document
 - keep an always-on long-poll listener running for immediate acknowledgements
+- start Codex through a wrapper that brings the listener up automatically for that session
 
 ## Token Discovery
 
@@ -118,6 +119,12 @@ Run the always-on listener:
 dashboard telegram-codex.listen
 ```
 
+Launch Codex with listener auto-start:
+
+```bash
+~/.developer-dashboard/cli/codex
+```
+
 ## Listener Behavior
 
 `dashboard telegram-codex.listen` or `./cli/listen`:
@@ -137,6 +144,12 @@ dashboard telegram-codex.listen
   - audio
   - voice
   - documents/files
+
+The installed `~/.developer-dashboard/cli/codex` wrapper:
+
+- starts the listener automatically before Codex launches
+- keeps one listener per session id
+- persists wrapper-managed pid and log files under `~/.telegram-codex/<session-id>/`
 
 ## Running The Listener
 
@@ -166,4 +179,5 @@ nohup ./cli/listen >/tmp/telegram-codex-listener.log 2>&1 &
 - Do not claim audio or video sending support; only text, photo, and document sending are implemented.
 - Do use the listener when immediate replies are required.
 - Do use a stable `CODEX_SESSION_ID` or `TELEGRAM_CODEX_SESSION_ID` when you want a later Codex session to resume the same Telegram conversation history cleanly.
+- Do launch Codex through `~/.developer-dashboard/cli/codex` when Telegram is meant to be the primary communication channel.
 - Do stop the listener if automatic replies become noisy or unwanted.

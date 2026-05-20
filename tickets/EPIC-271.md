@@ -2,4 +2,4 @@
 
 ## Summary
 
-Add a governed `telegram-codex` skill that bridges Telegram Bot API into a local Codex plugin and stdio MCP server, then extend it with an always-on listener path for immediate bot replies and per-Codex-session runtime state.
+Add a governed `telegram-codex` skill that bridges Telegram Bot API into a local Codex plugin and stdio MCP server, then extend it with an always-on listener path, per-Codex-session runtime state, and a Codex launcher wrapper that starts the session listener automatically.
