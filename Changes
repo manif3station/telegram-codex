@@ -1,3 +1,11 @@
+0.08 2026-05-20
+    - blocked duplicate Telegram reply spam by skipping any returned update
+      whose `update_id` is older than the next stored session offset
+    - added inbox-ledger offset recovery so a missing `listener.offset` file
+      does not force the listener to replay stale Telegram backlog
+    - added Docker-verified TDD coverage for stale-update skipping and
+      inbox-ledger offset recovery in the always-on listener path
+
 0.07 2026-05-20
     - finished the skill-owned `telegram-codex.start` launcher slice with
       Docker-verified coverage closure for the preserved saved-session and

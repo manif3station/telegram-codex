@@ -18,16 +18,26 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 - Docker functional gate for `DD-276`:
   - `Files=6, Tests=202`
   - `Result: PASS`
+- Docker functional gate for `DD-277`:
+  - `Files=6, Tests=212`
+  - `Result: PASS`
 - Docker covered gate for `DD-276`:
   - `Files=6, Tests=202`
   - `lib/Telegram/Codex/Manager.pm` statement `100.0`
   - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
   - `cover -ignore_covered_err` is required only for the intentional child-process stdio redirection statements marked `# uncoverable statement`
+- Docker covered gate for `DD-277`:
+  - `Files=6, Tests=212`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
 - Docker listener gate:
   - `Files=6, Tests=181`
   - listener state, session-specific runtime paths, inbox ledger, wrapper executability, thin-launcher generation, preserved saved-session resume mapping, no-backlog first auto-start behavior, `.env` discovery paths, and audio/video/voice reply eligibility are covered
 - Listener replay-spam regression:
   - Docker now covers the path where `sendMessage` fails and still proves the listener persists the next offset instead of replaying the same inbound Telegram update forever
+- Stale-update replay regression:
+  - Docker now covers recovery of the next offset from `listener.inbox.jsonl` when `listener.offset` is missing
+  - Docker now covers skipping returned updates older than the current next offset so stale Telegram backlog is not appended or auto-replied again
 - Earlier covered gate:
   - `lib/Telegram/Codex/Manager.pm` statement `100.0`
   - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`

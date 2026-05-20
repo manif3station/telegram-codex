@@ -41,6 +41,7 @@ The installed plugin exposes a stdio MCP server with tools for:
 - receiving text, photos, video, audio, voice, and documents through update metadata
 
 The skill itself also exposes an always-on listener command that keeps a per-Codex-session Telegram inbox ledger and persistent update offset.
+If the offset file is missing, the listener now recovers the next offset from the inbox ledger and skips stale returned updates older than that offset so old Telegram messages are not re-acknowledged again.
 
 ## Developer Dashboard Feature Added
 

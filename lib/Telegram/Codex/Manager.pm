@@ -291,6 +291,9 @@ sub execute_listen {
     my $paths = $self->listener_paths;
     make_path( $paths->{runtime_dir} ) if !-d $paths->{runtime_dir};
     my $offset = $self->read_listener_offset( $paths->{offset_file} );
+    if ( !defined $offset ) {
+        $offset = $self->recover_listener_offset_from_inbox( $paths->{inbox_file} );
+    }
     my $prime_latest = ( $self->env_value('TELEGRAM_CODEX_LISTENER_PRIME_LATEST') || q{} ) =~ /\A(?:1|true|yes|on)\z/i ? 1 : 0;
     if ( !defined $offset && $prime_latest ) {
         my $prime_offset;
@@ -325,6 +328,8 @@ sub execute_listen {
         my $result = $self->telegram_get( 'getUpdates', \%params );
         my @updates = @{ $result->{result} || [] };
         for my $update (@updates) {
+            my $update_id = $update->{update_id};
+            next if defined $offset && defined $update_id && $update_id < $offset;
             my $summary = $self->summarise_update($update);
             $self->append_inbox_entry( $paths->{inbox_file}, $summary );
             $processed++;
@@ -900,6 +905,19 @@ sub write_listener_offset {
     return $self->write_text_file( $path, $offset . "\n" );
 }
 
+sub recover_listener_offset_from_inbox {
+    my ( $self, $path ) = @_;
+    return undef if !-f $path;
+    my @lines = grep { defined $_ && $_ ne q{} } split /\n/, $self->read_text_file($path);
+    for my $line ( reverse @lines ) {
+        my $decoded = eval { decode_json($line) };
+        next if $@ || ref($decoded) ne 'HASH';
+        next if !defined $decoded->{update_id};
+        return $decoded->{update_id} + 1;
+    }
+    return undef;
+}
+
 sub append_inbox_entry {
     my ( $self, $path, $entry ) = @_;
     make_path( dirname($path) ) if !-d dirname($path);
@@ -980,7 +998,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.07',
+        agent   => 'telegram-codex/0.08',
         timeout => 60,
     );
     return $ua;

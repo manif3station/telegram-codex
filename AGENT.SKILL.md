@@ -143,6 +143,8 @@ dashboard telegram-codex.start
   - `TELEGRAM_CODEX_SESSION_ID`
   - `CODEX_SESSION_ID`
   - `default`
+- recovers the next offset from the inbox ledger when `listener.offset` is missing
+- skips any returned update older than the next stored offset so stale Telegram backlog is not re-acknowledged again
 - sends an immediate text acknowledgement for inbound:
   - text
   - photos

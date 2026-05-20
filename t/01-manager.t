@@ -908,6 +908,119 @@ sub new_manager {
 
 {
     my $runtime = tempdir( CLEANUP => 1 );
+    my $session_dir = File::Spec->catdir( $runtime, 'session-recover' );
+    mkdir $session_dir;
+    _write(
+        File::Spec->catfile( $session_dir, 'listener.inbox.jsonl' ),
+        join(
+            "\n",
+            encode_json( { update_id => 120, text => 'old-1' } ),
+            encode_json( { update_id => 121, text => 'old-2' } ),
+            q{},
+        ),
+    );
+    my @get_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'session-recover',
+        },
+        get_runner => sub {
+            my ( $method, $params ) = @_;
+            push @get_calls, [ $method, $params ];
+            return { ok => JSON::XS::true, result => [] };
+        },
+        post_runner => sub {
+            die 'listen should not reply when no new updates are present';
+        },
+    );
+    my $result = $manager->execute_listen( 1, 0, 'listener ack' );
+    is( $result->{processed}, 0, 'listen can recover an offset from the inbox ledger when the offset file is missing' );
+    is( $get_calls[0][1]{offset}, 122, 'listen resumes from the recovered next offset when only the inbox ledger exists' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $session_dir = File::Spec->catdir( $runtime, 'session-recover-invalid' );
+    mkdir $session_dir;
+    _write(
+        File::Spec->catfile( $session_dir, 'listener.inbox.jsonl' ),
+        join(
+            "\n",
+            'not-json-at-all',
+            encode_json( { text => 'missing update id' } ),
+            q{},
+        ),
+    );
+    my @get_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'session-recover-invalid',
+        },
+        get_runner => sub {
+            my ( $method, $params ) = @_;
+            push @get_calls, [ $method, $params ];
+            return { ok => JSON::XS::true, result => [] };
+        },
+        post_runner => sub {
+            die 'listen should not reply when no new updates are present';
+        },
+    );
+    my $result = $manager->execute_listen( 1, 0, 'listener ack' );
+    is( $result->{processed}, 0, 'listen handles an invalid inbox ledger without crashing when no offset file exists' );
+    ok( !exists $get_calls[0][1]{offset}, 'listen leaves the offset unset when inbox recovery finds no valid update id' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $session_dir = File::Spec->catdir( $runtime, 'session-skip-stale' );
+    mkdir $session_dir;
+    _write( File::Spec->catfile( $session_dir, 'listener.offset' ), "50\n" );
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'session-skip-stale',
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    { update_id => 48, message => { message_id => 1, text => 'too old', chat => { id => 88, type => 'private' } } },
+                    { update_id => 49, message => { message_id => 2, text => 'still old', chat => { id => 88, type => 'private' } } },
+                    { update_id => 50, message => { message_id => 3, text => 'current', chat => { id => 88, type => 'private' } } },
+                    { update_id => 51, message => { message_id => 4, text => 'newer', chat => { id => 88, type => 'private' } } },
+                ],
+            };
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return { ok => JSON::XS::true, result => { message_id => 300 + scalar @post_calls } };
+        },
+    );
+    my $result = $manager->execute_listen( 1, 0, 'listener ack' );
+    is( $result->{processed}, 2, 'listen skips stale returned updates that are older than the next stored offset' );
+    is( $result->{replied}, 2, 'listen only replies to non-stale updates' );
+    is( $manager->read_text_file( $result->{offset_file} ), "52\n", 'listen still advances offset after the non-stale updates' );
+    my @entries = split /\n/, $manager->read_text_file( $result->{inbox_file} );
+    is( scalar @entries, 2, 'listen appends only the non-stale updates to the inbox ledger' );
+    is( decode_json( $entries[0] )->{update_id}, 50, 'listen keeps the first current update' );
+    is( decode_json( $entries[1] )->{update_id}, 51, 'listen keeps the newer update' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
     my @post_calls;
     my $manager = new_manager(
         cwd  => $runtime,

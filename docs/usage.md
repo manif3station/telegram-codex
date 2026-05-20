@@ -130,6 +130,7 @@ dashboard telegram-codex.listen
 ```
 
 That command long-polls Telegram, appends inbound message summaries to `~/.telegram-codex/<session-id>/listener.inbox.jsonl`, and persists the next Telegram offset in `~/.telegram-codex/<session-id>/listener.offset`.
+If `listener.offset` is missing but the inbox ledger exists, the listener recovers the next offset from the latest inbox entry and skips any returned update older than that recovered offset.
 
 Session id resolution order is:
 
