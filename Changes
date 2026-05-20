@@ -1,3 +1,12 @@
+0.18 2026-05-20
+    - made the collector-owned `dashboard telegram-codex.check-message
+      <session-id>` worker persist any recovered inbox-ledger next offset
+      back to `listener.offset` before polling so stale on-disk offset state
+      cannot keep misleading restart diagnostics or replay investigations
+    - added Docker-verified regressions proving offset recovery rewrites
+      `listener.offset` both when the file is missing and when the stored
+      offset is older than the inbox-ledger truth
+
 0.17 2026-05-20
     - made the collector-owned `dashboard telegram-codex.check-message
       <session-id>` worker bind its explicit session suffix back into the

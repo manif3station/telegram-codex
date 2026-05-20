@@ -69,7 +69,7 @@ The collector definition installed or healed by `telegram-codex.start` is:
 }
 ```
 
-Dashboard may try to schedule it every five seconds, but singleton mode plus the same-session pid guard prevents a second `check-message <session-id>` copy from starting while the existing loop is still running. If `~/.telegram-codex/<session-id>/codex.session` exists, the worker automatically resumes that Codex session to generate the Telegram reply.
+Dashboard may try to schedule it every five seconds, but singleton mode plus the same-session pid guard prevents a second `check-message <session-id>` copy from starting while the existing loop is still running. If `~/.telegram-codex/<session-id>/codex.session` exists, the worker automatically resumes that Codex session to generate the Telegram reply. If `listener.inbox.jsonl` proves a newer next offset than `listener.offset`, the worker rewrites `listener.offset` before polling so restart state and replay diagnostics stay aligned.
 
 Stop it with Dashboard:
 
@@ -134,7 +134,7 @@ Per-session runtime state lives under:
 - `~/.telegram-codex/<session-id>/listener.inbox.jsonl`
 - `~/.telegram-codex/<session-id>/codex.session`
 
-`listener.offset` keeps the next Telegram update offset.
+`listener.offset` keeps the next Telegram update offset and is healed immediately from the inbox ledger when inbox recovery proves a newer next offset.
 
 `listener.inbox.jsonl` keeps the per-session inbound update ledger.
 

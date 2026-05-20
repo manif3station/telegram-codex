@@ -327,7 +327,10 @@ sub execute_check_messages {
     my $offset = $self->read_listener_offset( $paths->{offset_file} );
     my $recovered_offset = $self->recover_listener_offset_from_inbox( $paths->{inbox_file} );
     if ( defined $recovered_offset ) {
-        $offset = !defined $offset || $recovered_offset > $offset ? $recovered_offset : $offset;
+        if ( !defined $offset || $recovered_offset > $offset ) {
+            $offset = $recovered_offset;
+            $self->write_listener_offset( $paths->{offset_file}, $offset );
+        }
     }
     my $prime_latest = ( $self->env_value('TELEGRAM_CODEX_LISTENER_PRIME_LATEST') || q{} ) =~ /\A(?:1|true|yes|on)\z/i ? 1 : 0;
     if ( !defined $offset && $prime_latest ) {
@@ -1328,7 +1331,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.16',
+        agent   => 'telegram-codex/0.18',
         timeout => 60,
     );
     return $ua;

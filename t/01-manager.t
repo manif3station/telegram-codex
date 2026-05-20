@@ -1530,6 +1530,7 @@ EOF
     my $result = $manager->execute_listen( 1, 0, 'listener ack' );
     is( $result->{processed}, 0, 'listen can recover an offset from the inbox ledger when the offset file is missing' );
     is( $get_calls[0][1]{offset}, 122, 'listen resumes from the recovered next offset when only the inbox ledger exists' );
+    is( $manager->read_text_file( File::Spec->catfile( $session_dir, 'listener.offset' ) ), "122\n", 'listen persists the recovered next offset back to listener.offset when the file was missing' );
 }
 
 {
@@ -1564,6 +1565,7 @@ EOF
     my $result = $manager->execute_listen( 1, 0, 'listener ack' );
     is( $result->{processed}, 0, 'listen handles stale stored offsets cleanly when the inbox ledger proves a newer offset' );
     is( $get_calls[0][1]{offset}, 122, 'listen advances to the newer recovered inbox offset instead of replaying from an older stored offset' );
+    is( $manager->read_text_file( File::Spec->catfile( $session_dir, 'listener.offset' ) ), "122\n", 'listen rewrites listener.offset to the newer recovered inbox offset before polling' );
 }
 
 {

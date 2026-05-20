@@ -16,10 +16,10 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 ## Latest Evidence
 
 - Docker functional gate for `DD-285`:
-  - `Files=6, Tests=280`
+  - `Files=6, Tests=282`
   - `Result: PASS`
 - Docker covered gate for `DD-285`:
-  - `Files=6, Tests=280`
+  - `Files=6, Tests=282`
   - `lib/Telegram/Codex/Manager.pm` statement `100.0`
   - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
 - Collector runtime regressions:
@@ -32,6 +32,7 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
   - the same session-suffixed `check-message` process does not start a second overlapping polling worker
   - the collector-owned `check-message <session-id>` worker now binds the explicit session suffix into runtime state and auto-resumes the persisted `codex.session` target for replies
   - the spawned `codex exec resume` reply subprocess now uses the bypass flag needed for automated non-interactive Telegram reply generation on this machine
+  - recovered inbox-ledger offsets are now written back to `~/.telegram-codex/<session-id>/listener.offset` immediately when recovery proves a newer next offset than the on-disk file
 - Docker functional gate for `DD-276`:
   - `Files=6, Tests=202`
   - `Result: PASS`
