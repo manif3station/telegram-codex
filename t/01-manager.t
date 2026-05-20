@@ -58,6 +58,7 @@ sub new_manager {
         listener_start_pid    => $args{listener_start_pid},
         sleep_runner         => $args{sleep_runner},
         codex_resume_runner  => $args{codex_resume_runner},
+        command_runner       => $args{command_runner},
     );
 }
 
@@ -257,6 +258,7 @@ sub new_manager {
     is( $paths->{inbox_file}, File::Spec->catfile( $runtime, 'session-abc', 'listener.inbox.jsonl' ), 'listener_paths stores inbox ledger under the session directory' );
     is( $paths->{pid_file}, File::Spec->catfile( $runtime, 'session-abc', 'listener.pid' ), 'listener_paths stores pid under the session directory' );
     is( $paths->{log_file}, File::Spec->catfile( $runtime, 'session-abc', 'listener.log' ), 'listener_paths stores log under the session directory' );
+    is( $paths->{target_session_file}, File::Spec->catfile( $runtime, 'session-abc', 'codex.session' ), 'listener_paths stores the Codex target session under the session directory' );
 }
 
 {
@@ -350,10 +352,11 @@ sub new_manager {
     my $plan = $manager->execute_start('--full-auto');
     is( $plan->{action}, 'exec', 'execute_start returns an exec plan when capture mode is enabled' );
     is_deeply( $plan->{codex_args}, ['--full-auto'], 'execute_start preserves direct codex args without a saved session mapping' );
-    is( $plan->{start_listener}, 1, 'execute_start enables listener startup when autostart is enabled and a token is available' );
-    is( $plan->{listener_session_id}, 'default', 'execute_start falls back to default listener session id when no Codex session is known yet' );
-    is( $plan->{listener_mode}, 'codex-session', 'execute_start plans managed startup through Codex session reply mode' );
-    is( $plan->{codex_session_id}, 'default', 'execute_start plans managed startup against the resolved Codex session id' );
+    is( $plan->{start_collector}, 1, 'execute_start enables collector startup when autostart is enabled and a token is available' );
+    is( $plan->{collector_session_id}, $manager->workspace_session_id, 'execute_start derives the collector session id from the workspace when no session env is present' );
+    is( $plan->{collector_name}, 'telegram-codex-' . $manager->workspace_session_id, 'execute_start plans the DD collector name for the workspace session' );
+    is( $plan->{collector_command}, 'dashboard telegram-codex.check-messages', 'execute_start plans the collector command' );
+    is( $plan->{codex_session_id}, $manager->workspace_session_id, 'execute_start plans Codex replies against the workspace session when nothing is mapped yet' );
 }
 
 {
@@ -384,7 +387,162 @@ sub new_manager {
     my $plan = $manager->execute_start('--search');
     is_deeply( $plan->{codex_args}, [ 'resume', 'session-saved-77', '--search' ], 'execute_start preserves the original saved-session resume logic from the dashboard codex launcher' );
     is( $plan->{mapped_session}, 'session-saved-77', 'execute_start reports the mapped saved session id' );
-    is( $plan->{listener_session_id}, 'session-saved-77', 'execute_start uses the saved session id for listener state when no explicit session id was given' );
+    is( $plan->{collector_session_id}, $manager->workspace_session_id, 'execute_start still keeps the collector session keyed to the workspace session' );
+    is( $plan->{codex_session_id}, 'session-saved-77', 'execute_start keeps Telegram replies pointed at the saved Codex session mapping' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $config_root = File::Spec->catdir( $home, '.developer-dashboard', 'config' );
+    make_path($config_root);
+    _write(
+        File::Spec->catfile( $config_root, 'config.json' ),
+        encode_json(
+            {
+                collectors => [
+                    { name => 'keep-me', interval => 10 },
+                    { name => 'telegram-codex-demo', interval => 99, mode => 'multiple' },
+                    { name => 'telegram-codex-demo', interval => 1, command => 'bad' },
+                ],
+            }
+        ),
+    );
+    my $workspace = File::Spec->catdir( $home, 'demo' );
+    make_path($workspace);
+    my $manager = new_manager(
+        cwd  => $workspace,
+        home => $home,
+    );
+    my $result = $manager->ensure_collector_config( 'demo', cwd => $workspace );
+    is( $result->{collector_name}, 'telegram-codex-demo', 'ensure_collector_config targets the expected collector name' );
+    is( $result->{removed_duplicates}, 1, 'ensure_collector_config removes duplicate collector entries for the same session' );
+    my $saved = decode_json( $manager->read_text_file( File::Spec->catfile( $config_root, 'config.json' ) ) );
+    my @telegram_collectors = grep { ref($_) eq 'HASH' && $_->{name} eq 'telegram-codex-demo' } @{ $saved->{collectors} };
+    is( scalar @telegram_collectors, 1, 'ensure_collector_config leaves exactly one collector entry for the session' );
+    is_deeply(
+        $telegram_collectors[0],
+        {
+            name     => 'telegram-codex-demo',
+            interval => 5,
+            rotation => { lines => 100 },
+            cwd      => $workspace,
+            command  => 'dashboard telegram-codex.check-messages',
+            mode     => 'singleton',
+        },
+        'ensure_collector_config rewrites the collector to the governed telegram-codex collector shape',
+    );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $workspace = File::Spec->catdir( $home, 'workspace-collector' );
+    make_path($workspace);
+    my @commands;
+    my $manager = new_manager(
+        cwd  => $workspace,
+        home => $home,
+        command_runner => sub {
+            my ( $command, $meta ) = @_;
+            push @commands, [ @$command, $meta->{plan}{collector_cwd}, $meta->{plan}{codex_session_id} ];
+            return { ok => 1 };
+        },
+    );
+    my $plan = {
+        collector_session_id => 'workspace-collector',
+        collector_name       => 'telegram-codex-workspace-collector',
+        collector_cwd        => $workspace,
+        codex_session_id     => 'session-saved-99',
+    };
+    $manager->ensure_startup_collector($plan);
+    $manager->restart_startup_collector($plan);
+    is_deeply(
+        $commands[0],
+        [ 'dashboard', 'restart', 'collector', 'telegram-codex-workspace-collector', $workspace, 'session-saved-99' ],
+        'startup collector orchestration restarts the named DD collector after persisting the workspace session state',
+    );
+    is(
+        $manager->read_codex_target_session_id(
+            File::Spec->catfile( $home, '.telegram-codex', 'workspace-collector', 'codex.session' ),
+        ),
+        'session-saved-99',
+        'ensure_startup_collector persists the Codex target session used for future Telegram replies',
+    );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $workspace = File::Spec->catdir( $home, 'workspace-restart-system' );
+    my $bin_dir = File::Spec->catdir( $home, 'bin' );
+    make_path($workspace);
+    make_path($bin_dir);
+    my $dashboard = File::Spec->catfile( $bin_dir, 'dashboard' );
+    my $log = File::Spec->catfile( $home, 'dashboard-restart.log' );
+    _write( $dashboard, "#!/bin/sh\nprintf '%s\\n' \"\$@\" > \"$log\"\nexit 0\n" );
+    chmod 0755, $dashboard or die "Unable to chmod fake dashboard restart helper: $!";
+    local $ENV{PATH} = $bin_dir;
+    my $manager = new_manager(
+        cwd  => $workspace,
+        home => $home,
+    );
+    my $result = $manager->restart_startup_collector(
+        {
+            collector_name => 'telegram-codex-workspace-restart-system',
+        }
+    );
+    is( $result->{exit_code}, 0, 'restart_startup_collector succeeds through the real system command path' );
+    my $restart_log = do {
+        open my $fh, '<', $log or die $!;
+        local $/;
+        <$fh>;
+    };
+    is( $restart_log, "restart\ncollector\ntelegram-codex-workspace-restart-system\n", 'restart_startup_collector runs dashboard restart collector for the named session collector' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $workspace = File::Spec->catdir( $home, 'workspace-start-live' );
+    my $bin_dir = File::Spec->catdir( $home, 'bin' );
+    make_path($workspace);
+    make_path($bin_dir);
+    my $args_file = File::Spec->catfile( $home, 'collector-start.args' );
+    my $real_codex = File::Spec->catfile( $bin_dir, 'codex-real' );
+    _write( $real_codex, "#!/bin/sh\nprintf '%s\\n' \"\$CODEX_SESSION_ID\" \"\$TELEGRAM_CODEX_SESSION_ID\" \"\$@\" > \"$args_file\"\nexit 0\n" );
+    chmod 0755, $real_codex or die "Unable to chmod fake real codex for collector start test: $!";
+    my $command_log = File::Spec->catfile( $home, 'collector-restart.log' );
+    my $pid = fork();
+    die "Unable to fork execute_start collector branch test: $!" if !defined $pid;
+    if ( !$pid ) {
+        my $manager = new_manager(
+            cwd  => $workspace,
+            home => $home,
+            env  => {
+                TELEGRAM_BOT_TOKEN              => 'token-xyz',
+                TELEGRAM_CODEX_ENABLE_AUTOSTART => '1',
+                CODEX_REAL_BIN                  => $real_codex,
+            },
+            command_runner => sub {
+                my ($command) = @_;
+                _write( $command_log, join( "\n", @$command ) . "\n" );
+                return { ok => 1 };
+            },
+        );
+        $manager->execute_start('--search');
+        exit 95;
+    }
+    waitpid $pid, 0;
+    is( $? >> 8, 0, 'execute_start runs the collector setup branch before launching the real codex binary' );
+    my $restart_log = do {
+        open my $fh, '<', $command_log or die $!;
+        local $/;
+        <$fh>;
+    };
+    is( $restart_log, "dashboard\nrestart\ncollector\ntelegram-codex-workspace-start-live\n", 'execute_start restarts the expected DD collector for the workspace session' );
+    my $args = do {
+        open my $fh, '<', $args_file or die $!;
+        local $/;
+        <$fh>;
+    };
+    is( $args, "workspace-start-live\nworkspace-start-live\n--search\n", 'execute_start exports the workspace session id into the launched Codex process' );
 }
 
 {
@@ -845,6 +1003,29 @@ sub new_manager {
     is( $resume_calls[0][0], 'session-managed-listen', 'managed listener mode targets the active Codex session id' );
     like( $resume_calls[0][1], qr/text=hello2/, 'managed listener mode passes the inbound Telegram text into the Codex reply prompt' );
     is( $post_calls[0][1]{text}, 'This is a real Codex session reply.', 'managed listener mode sends the Codex-generated reply instead of a placeholder' );
+}
+
+{
+    my $manager = new_manager;
+    my $prompt = $manager->codex_session_reply_prompt(
+        {
+            message_id => 55,
+            text       => q{},
+            caption    => 'media caption',
+            chat       => { id => 77 },
+            photo      => { file_id => 'photo-1' },
+            document   => { file_id => 'doc-1', file_name => 'report.pdf', mime_type => 'application/pdf' },
+            audio      => { file_id => 'aud-1', title => 'Track', mime_type => 'audio/mpeg' },
+            video      => { file_id => 'vid-1', mime_type => 'video/mp4', duration => 9 },
+            voice      => { file_id => 'voc-1', mime_type => 'audio/ogg', duration => 4 },
+        }
+    );
+    like( $prompt, qr/photo_file_id=photo-1/, 'codex_session_reply_prompt includes inbound photo metadata for Telegram media handling' );
+    like( $prompt, qr/document_file_id=doc-1/, 'codex_session_reply_prompt includes inbound document metadata' );
+    like( $prompt, qr/document_name=report\.pdf/, 'codex_session_reply_prompt includes inbound document filename metadata' );
+    like( $prompt, qr/audio_file_id=aud-1/, 'codex_session_reply_prompt includes inbound audio metadata' );
+    like( $prompt, qr/video_file_id=vid-1/, 'codex_session_reply_prompt includes inbound video metadata' );
+    like( $prompt, qr/voice_file_id=voc-1/, 'codex_session_reply_prompt includes inbound voice metadata' );
 }
 
 {

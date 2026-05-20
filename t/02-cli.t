@@ -272,7 +272,7 @@ sub capture_run {
                     return { ok => JSON::XS::true, result => { message_id => 61, chat => { id => $params->{chat_id} }, text => $params->{text} } };
                 },
             );
-            my $rc = $manager->main_listen( 1, 0, 'listener online' );
+            my $rc = $manager->main_check_messages( 1, 0, 'listener online' );
             unlink "$runtime/cli-listen/listener.offset" if -f "$runtime/cli-listen/listener.offset";
             unlink "$runtime/cli-listen/listener.inbox.jsonl" if -f "$runtime/cli-listen/listener.inbox.jsonl";
             rmdir "$runtime/cli-listen" if -d "$runtime/cli-listen";
@@ -280,10 +280,10 @@ sub capture_run {
             return $rc;
         }
     );
-    is( $rc, 0, 'main_listen succeeds' );
-    is( $stderr, q{}, 'main_listen leaves stderr empty' );
-    is( decode_json($stdout)->{replied}, 1, 'main_listen prints listener result JSON' );
-    like( decode_json($stdout)->{offset_file}, qr{/cli-listen/listener\.offset\z}, 'main_listen reports a session-specific offset path' );
+    is( $rc, 0, 'main_check_messages succeeds' );
+    is( $stderr, q{}, 'main_check_messages leaves stderr empty' );
+    is( decode_json($stdout)->{replied}, 1, 'main_check_messages prints collector polling result JSON' );
+    like( decode_json($stdout)->{offset_file}, qr{/cli-listen/listener\.offset\z}, 'main_check_messages reports a session-specific offset path' );
 }
 
 done_testing;

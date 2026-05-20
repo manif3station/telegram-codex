@@ -32,6 +32,7 @@ sub new {
         listener_start_pid   => $args{listener_start_pid},
         sleep_runner         => $args{sleep_runner},
         codex_resume_runner  => $args{codex_resume_runner},
+        command_runner       => $args{command_runner},
     }, $class;
     $self->{env} = $args{env} || $self->_merged_env;
     $self->{ua} = $args{ua} || $self->_build_ua;
@@ -46,7 +47,7 @@ sub main_reply            { return shift->_run_main( 'reply',            @_ ) }
 sub main_send_photo       { return shift->_run_main( 'send_photo',       @_ ) }
 sub main_send_document    { return shift->_run_main( 'send_document',    @_ ) }
 sub main_auto_reply_start { return shift->_run_main( 'auto_reply_start', @_ ) }
-sub main_listen           { return shift->_run_main( 'listen',           @_ ) }
+sub main_check_messages   { return shift->_run_main( 'check_messages',   @_ ) }
 sub main_start            { return shift->_run_main( 'start',            @_ ) }
 
 sub _run_main {
@@ -138,12 +139,15 @@ sub execute_start {
     my $plan = $self->codex_start_plan( $config, @argv );
     return $plan if $self->env_value('TELEGRAM_CODEX_START_CAPTURE');
 
-    $self->start_listener_if_needed(
-        $plan->{listener_session_id},
-        mode             => $plan->{listener_mode},
-        reply_text       => $plan->{listener_reply_text},
-        codex_session_id => $plan->{codex_session_id},
-    ) if $plan->{start_listener};
+    if ( $plan->{start_collector} ) {
+        $self->ensure_startup_collector($plan);
+        $self->restart_startup_collector($plan);
+    }
+
+    if ( defined $plan->{collector_session_id} && $plan->{collector_session_id} ne q{} ) {
+        $ENV{CODEX_SESSION_ID} = $plan->{collector_session_id};
+        $ENV{TELEGRAM_CODEX_SESSION_ID} = $plan->{collector_session_id};
+    }
 
     if ( my $ollama_model = $self->env_value('OLLAMA_MODEL') ) {
         my $default_model = 'qwen3.5:397b-cloud';
@@ -283,7 +287,12 @@ sub execute_auto_reply_start {
 
 sub execute_listen {
     my ( $self, @argv ) = @_;
-    die "Usage: dashboard telegram-codex.listen [MAX_CYCLES] [POLL_TIMEOUT] [REPLY_TEXT]\n" if @argv > 3;
+    return $self->execute_check_messages(@argv);
+}
+
+sub execute_check_messages {
+    my ( $self, @argv ) = @_;
+    die "Usage: dashboard telegram-codex.check-messages [MAX_CYCLES] [POLL_TIMEOUT] [REPLY_TEXT]\n" if @argv > 3;
     my $max_cycles;
     my $poll_timeout = 30;
     if ( @argv && $argv[0] =~ /\A\d+\z/ ) {
@@ -393,7 +402,7 @@ sub execute_listen {
     }
 
     return {
-        mode       => 'listen',
+        mode       => 'check_messages',
         cycles     => $cycles,
         processed  => $processed,
         replied    => $replied,
@@ -500,8 +509,8 @@ sub plugin_manifest {
         mcpServers  => './.mcp.json',
         interface   => {
             displayName      => 'Telegram Codex',
-            shortDescription => 'Poll, reply, and keep a Telegram listener active',
-            longDescription  => 'Use a local Telegram Bot API bridge for Codex through a generated stdio MCP server and a governed always-on listener command.',
+            shortDescription => 'Poll and reply through a DD-managed Telegram collector',
+            longDescription  => 'Use a local Telegram Bot API bridge for Codex through a generated stdio MCP server and a governed DD collector-owned polling loop.',
             developerName    => 'Michael Vu',
             category         => 'Productivity',
             capabilities     => [ 'Interactive', 'Write' ],
@@ -545,9 +554,9 @@ Current mode:
 
 The bot token is loaded from the plugin-local `.env` file.
 
-For immediate bot replies outside manual Codex polling, run the skill listener:
+For managed two-way replies through the Dashboard collector runtime, use:
 
-- `dashboard telegram-codex.listen`
+- `dashboard telegram-codex.start`
 
 After `dashboard skills install telegram-codex`, the managed launch chain is:
 
@@ -592,10 +601,12 @@ sub codex_start_plan {
     if ( defined $mapped_session && $mapped_session ne q{} ) {
         @codex_args = ( 'resume', $mapped_session, @argv );
     }
-    my $listener_session_id = $self->env_value('TELEGRAM_CODEX_SESSION_ID')
-      || $mapped_session
+    my $collector_session_id = $self->env_value('TELEGRAM_CODEX_SESSION_ID')
       || $self->env_value('CODEX_SESSION_ID')
-      || 'default';
+      || $self->workspace_session_id;
+    my $codex_session_id = $mapped_session
+      || $self->env_value('CODEX_SESSION_ID')
+      || $collector_session_id;
     return {
         mode                => 'start',
         action              => 'exec',
@@ -603,12 +614,113 @@ sub codex_start_plan {
         mapped_session      => $mapped_session,
         codex_args          => \@codex_args,
         real_codex_bin      => $self->resolve_real_codex_bin( $self->codex_launcher_paths ),
-        start_listener      => ( $self->env_value('TELEGRAM_BOT_TOKEN') && ( $self->env_value('TELEGRAM_CODEX_ENABLE_AUTOSTART') || q{} ) eq '1' ) ? 1 : 0,
-        listener_session_id => $listener_session_id,
-        listener_mode       => $self->managed_listener_mode,
-        listener_reply_text => undef,
-        codex_session_id    => $listener_session_id,
+        start_collector      => ( $self->env_value('TELEGRAM_BOT_TOKEN') && ( $self->env_value('TELEGRAM_CODEX_ENABLE_AUTOSTART') || q{} ) eq '1' ) ? 1 : 0,
+        collector_session_id => $collector_session_id,
+        collector_name       => $self->collector_name_for_session($collector_session_id),
+        collector_cwd        => $self->{cwd},
+        collector_command    => 'dashboard telegram-codex.check-messages',
+        codex_session_id     => $codex_session_id,
     };
+}
+
+sub ensure_startup_collector {
+    my ( $self, $plan ) = @_;
+    my $result = $self->ensure_collector_config(
+        $plan->{collector_session_id},
+        cwd => $plan->{collector_cwd},
+    );
+    $self->write_codex_target_session_id(
+        $plan->{collector_session_id},
+        $plan->{codex_session_id},
+    );
+    return $result;
+}
+
+sub restart_startup_collector {
+    my ( $self, $plan ) = @_;
+    my @command = ( 'dashboard', 'restart', 'collector', $plan->{collector_name} );
+    if ( $self->{command_runner} ) {
+        return $self->{command_runner}->( \@command, { plan => $plan } );
+    }
+    my $exit = system @command;
+    die "Unable to restart collector $plan->{collector_name}\n" if $exit == -1 || ( $exit >> 8 ) != 0;
+    return {
+        command   => \@command,
+        exit_code => $exit >> 8,
+    };
+}
+
+sub ensure_collector_config {
+    my ( $self, $session_id, %args ) = @_;
+    my $path = $self->dashboard_config_path;
+    my $data = $self->read_json_file_or_default( $path, {} );
+    $data = {} if ref($data) ne 'HASH';
+    my $name = $self->collector_name_for_session($session_id);
+    my $wanted = $self->collector_definition(
+        $session_id,
+        cwd => $args{cwd},
+    );
+    my @collectors = ref( $data->{collectors} ) eq 'ARRAY' ? @{ $data->{collectors} } : ();
+    my @kept;
+    my $seen = 0;
+    my $removed_duplicates = 0;
+    for my $collector (@collectors) {
+        if ( ref($collector) eq 'HASH' && defined $collector->{name} && $collector->{name} eq $name ) {
+            if ( !$seen ) {
+                push @kept, $wanted;
+                $seen = 1;
+            }
+            else {
+                $removed_duplicates++;
+            }
+            next;
+        }
+        push @kept, $collector;
+    }
+    push @kept, $wanted if !$seen;
+    $data->{collectors} = \@kept;
+    $self->write_text_file( $path, $self->encode_pretty_json($data) );
+    return {
+        config_path        => $path,
+        collector_name     => $name,
+        collector          => $wanted,
+        created            => $seen ? 0 : 1,
+        removed_duplicates => $removed_duplicates,
+    };
+}
+
+sub collector_definition {
+    my ( $self, $session_id, %args ) = @_;
+    my $cwd = defined $args{cwd} && $args{cwd} ne q{} ? $args{cwd} : $self->{cwd};
+    return {
+        name     => $self->collector_name_for_session($session_id),
+        interval => 5,
+        rotation => { lines => 100 },
+        cwd      => $cwd,
+        command  => 'dashboard telegram-codex.check-messages',
+        mode     => 'singleton',
+    };
+}
+
+sub collector_name_for_session {
+    my ( $self, $session_id ) = @_;
+    return 'telegram-codex-' . $self->normalise_session_id($session_id);
+}
+
+sub dashboard_config_path {
+    my ($self) = @_;
+    return File::Spec->catfile( $self->resolve_path('~/.developer-dashboard/config'), 'config.json' );
+}
+
+sub read_json_file_or_default {
+    my ( $self, $path, $default ) = @_;
+    return $default if !-f $path;
+    return decode_json( $self->read_text_file($path) );
+}
+
+sub workspace_session_id {
+    my ($self) = @_;
+    return $self->normalise_session_id( $self->basename( $self->{cwd} ) );
 }
 
 sub start_listener_if_needed {
@@ -668,6 +780,8 @@ sub start_listener_if_needed {
 
 sub listener_command_path {
     my ($self) = @_;
+    my $check_messages = File::Spec->catfile( $self->{skill_root}, 'cli', 'check-messages' );
+    return $check_messages if -f $check_messages;
     return File::Spec->catfile( $self->{skill_root}, 'cli', 'listen' );
 }
 
@@ -910,6 +1024,7 @@ sub listener_paths_for_session {
         inbox_file   => File::Spec->catfile( $runtime_dir, 'listener.inbox.jsonl' ),
         pid_file     => File::Spec->catfile( $runtime_dir, 'listener.pid' ),
         log_file     => File::Spec->catfile( $runtime_dir, 'listener.log' ),
+        target_session_file => File::Spec->catfile( $runtime_dir, 'codex.session' ),
     };
 }
 
@@ -969,10 +1084,6 @@ sub inbox_contains_update_id {
     return 0;
 }
 
-sub managed_listener_mode {
-    return 'codex-session';
-}
-
 sub listener_reply_message_for_update {
     my ( $self, $summary, $reply_text ) = @_;
     my $mode = $self->env_value('TELEGRAM_CODEX_LISTENER_MODE') || 'static';
@@ -984,7 +1095,9 @@ sub listener_reply_message_for_update {
 
 sub codex_session_reply_for_update {
     my ( $self, $summary ) = @_;
-    my $session_id = $self->env_value('TELEGRAM_CODEX_TARGET_SESSION_ID') || $self->listener_session_id;
+    my $session_id = $self->env_value('TELEGRAM_CODEX_TARGET_SESSION_ID')
+      || $self->read_codex_target_session_id( $self->listener_paths->{target_session_file} )
+      || $self->listener_session_id;
     my $prompt = $self->codex_session_reply_prompt($summary);
     if ( $self->{codex_resume_runner} ) {
         return $self->{codex_resume_runner}->( $session_id, $prompt, $summary );
@@ -1026,7 +1139,52 @@ sub codex_session_reply_prompt {
       "chat_id=$chat_id",
       "message_id=$message_id",
       "text=$text",
-      "caption=$caption";
+      "caption=$caption",
+      $self->telegram_media_prompt_lines($summary);
+}
+
+sub telegram_media_prompt_lines {
+    my ( $self, $summary ) = @_;
+    my @lines;
+    if ( $summary->{photo} ) {
+        push @lines, 'photo_file_id=' . ( $summary->{photo}{file_id} || q{} );
+    }
+    if ( $summary->{document} ) {
+        push @lines, 'document_file_id=' . ( $summary->{document}{file_id} || q{} );
+        push @lines, 'document_name=' . ( $summary->{document}{file_name} || q{} );
+        push @lines, 'document_mime=' . ( $summary->{document}{mime_type} || q{} );
+    }
+    if ( $summary->{audio} ) {
+        push @lines, 'audio_file_id=' . ( $summary->{audio}{file_id} || q{} );
+        push @lines, 'audio_title=' . ( $summary->{audio}{title} || q{} );
+        push @lines, 'audio_mime=' . ( $summary->{audio}{mime_type} || q{} );
+    }
+    if ( $summary->{video} ) {
+        push @lines, 'video_file_id=' . ( $summary->{video}{file_id} || q{} );
+        push @lines, 'video_mime=' . ( $summary->{video}{mime_type} || q{} );
+        push @lines, 'video_duration=' . ( $summary->{video}{duration} || q{} );
+    }
+    if ( $summary->{voice} ) {
+        push @lines, 'voice_file_id=' . ( $summary->{voice}{file_id} || q{} );
+        push @lines, 'voice_mime=' . ( $summary->{voice}{mime_type} || q{} );
+        push @lines, 'voice_duration=' . ( $summary->{voice}{duration} || q{} );
+    }
+    return @lines;
+}
+
+sub write_codex_target_session_id {
+    my ( $self, $session_id, $target_session_id ) = @_;
+    return if !defined $target_session_id || $target_session_id eq q{};
+    my $path = $self->listener_paths_for_session($session_id)->{target_session_file};
+    return $self->write_text_file( $path, $target_session_id . "\n" );
+}
+
+sub read_codex_target_session_id {
+    my ( $self, $path ) = @_;
+    return undef if !defined $path || !-f $path;
+    my $content = $self->read_text_file($path);
+    $content =~ s/\s+\z//;
+    return $content eq q{} ? undef : $content;
 }
 
 sub listener_pause_seconds {
@@ -1119,7 +1277,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.14',
+        agent   => 'telegram-codex/0.15',
         timeout => 60,
     );
     return $ua;

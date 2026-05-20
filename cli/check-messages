@@ -7,4 +7,4 @@ use lib "$Bin/../lib";
 
 use Telegram::Codex::Manager ();
 
-exit Telegram::Codex::Manager->main_listen(@ARGV);
+exit Telegram::Codex::Manager->main_check_messages(@ARGV);

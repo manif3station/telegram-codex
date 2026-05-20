@@ -1,3 +1,14 @@
+0.15 2026-05-20
+    - moved the always-on Telegram polling path under a DD collector owned by
+      `dashboard telegram-codex.start` instead of keeping the standalone
+      resident listener as the primary runtime model
+    - made `telegram-codex.start` heal `~/.developer-dashboard/config/config.json`
+      so exactly one `telegram-codex-<session-id>` collector exists per
+      workspace session, with duplicate collector entries removed automatically
+    - added `dashboard telegram-codex.check-messages` and `./cli/check-messages`
+      as the collector-owned long-running polling loop, while persisting the
+      active Codex reply target in `~/.telegram-codex/<session-id>/codex.session`
+
 0.14 2026-05-20
     - made managed listener startup `exec` the real `cli/listen` process so
       one session keeps one actual listener pid

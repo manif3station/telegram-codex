@@ -15,6 +15,18 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-284`:
+  - `Files=6, Tests=263`
+  - `Result: PASS`
+- Docker covered gate for `DD-284`:
+  - `Files=6, Tests=263`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Collector runtime regressions:
+  - `dashboard telegram-codex.start` now creates or heals exactly one `telegram-codex-<session-id>` collector in `~/.developer-dashboard/config/config.json`
+  - duplicate collector entries for the same session are removed automatically
+  - the managed startup path persists the active Codex reply target in `~/.telegram-codex/<session-id>/codex.session`
+  - the collector-owned `dashboard telegram-codex.check-messages` loop is now the governed always-on polling path
 - Docker functional gate for `DD-276`:
   - `Files=6, Tests=202`
   - `Result: PASS`
