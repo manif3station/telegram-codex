@@ -38,13 +38,14 @@ When `dashboard telegram-codex.start` runs with `TELEGRAM_BOT_TOKEN` and `TELEGR
 5. writes the active Codex reply target into `~/.telegram-codex/<session-id>/codex.session`
 6. restarts the DD collector with:
    - `cwd` fixed to the workspace where `dashboard telegram-codex.start` was run
-   - `command` fixed to `dashboard telegram-codex.check-messages`
+   - `command` fixed to `dashboard telegram-codex.check-message <session-id>`
    - `interval` fixed to `5`
    - `rotation.lines` fixed to `100`
    - `mode` fixed to `singleton`
 7. launches the real Codex binary
 
 The collector-owned polling loop is now the always-on path. The old standalone listener command is no longer the primary runtime model.
+When `codex.session` exists for that collector session, `dashboard telegram-codex.check-message <session-id>` automatically routes replies back through that saved Codex session.
 
 ## What The Skill Supports
 
@@ -85,7 +86,7 @@ dashboard telegram-codex.start
 Run the collector-owned polling loop directly for debugging:
 
 ```bash
-dashboard telegram-codex.check-messages
+dashboard telegram-codex.check-message <session-id>
 ```
 
 Inspect the bot identity:
@@ -140,12 +141,12 @@ The collector record created or healed by `dashboard telegram-codex.start` looks
   "interval": 5,
   "rotation": { "lines": 100 },
   "cwd": "<workspace where start was run>",
-  "command": "dashboard telegram-codex.check-messages",
+  "command": "dashboard telegram-codex.check-message <session-id>",
   "mode": "singleton"
 }
 ```
 
-`dashboard telegram-codex.check-messages` is a long-running polling loop. Dashboard attempts to schedule it every five seconds, but singleton mode prevents overlap while the existing loop is still alive.
+`dashboard telegram-codex.check-message <session-id>` is a long-running polling loop. Dashboard attempts to schedule it every five seconds, but singleton mode plus the same-session pid guard prevents overlap while the existing loop is still alive. When `~/.telegram-codex/<session-id>/codex.session` exists, the worker resumes that Codex session to generate the Telegram reply text.
 
 Stop it with Dashboard collector lifecycle commands, for example:
 
@@ -168,4 +169,4 @@ The skill keeps per-session Telegram state under:
 - Do not claim binary media content was read unless the file was downloaded first.
 - Do not claim outbound audio or video send support; only text, photo, and document sending are implemented.
 - Do use `dashboard telegram-codex.start` for the real always-on path.
-- Do treat `dashboard telegram-codex.check-messages` as a managed collector loop, not as a short one-off polling command.
+- Do treat `dashboard telegram-codex.check-message <session-id>` as a managed collector loop, not as a short one-off polling command.

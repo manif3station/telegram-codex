@@ -47,6 +47,8 @@ dashboard restart collector telegram-codex-<session-id>
 
 7. launches the real Codex binary
 
+When `~/.telegram-codex/<session-id>/codex.session` exists, the collector-owned `dashboard telegram-codex.check-message <session-id>` worker automatically resumes that Codex session to generate the Telegram reply text.
+
 ## Collector Contract
 
 The collector shape is:
@@ -57,12 +59,12 @@ The collector shape is:
   "interval": 5,
   "rotation": { "lines": 100 },
   "cwd": "<workspace where start was run>",
-  "command": "dashboard telegram-codex.check-messages",
+  "command": "dashboard telegram-codex.check-message <session-id>",
   "mode": "singleton"
 }
 ```
 
-`dashboard telegram-codex.check-messages` is a long-running polling loop. Dashboard may try to start it every five seconds, but singleton mode prevents overlap while the active loop is still running.
+`dashboard telegram-codex.check-message <session-id>` is a long-running polling loop. Dashboard may try to start it every five seconds, but singleton mode plus the same-session pid guard prevents overlap while the active loop is still running. When `codex.session` exists for that session, the worker replies through that persisted Codex session automatically.
 
 ## What The Skill Can Receive
 
@@ -141,7 +143,7 @@ dashboard telegram-codex.start
 Collector loop:
 
 ```bash
-dashboard telegram-codex.check-messages
+dashboard telegram-codex.check-message <session-id>
 ```
 
 Inspect updates:
@@ -159,7 +161,7 @@ dashboard telegram-codex.download <FILE_ID>
 ## Important Rules For Another Codex Session
 
 - Use `dashboard telegram-codex.start` when Telegram is meant to be the primary communication channel.
-- Treat `dashboard telegram-codex.check-messages` as a collector-owned long-running loop, not as a short one-shot helper.
+- Treat `dashboard telegram-codex.check-message <session-id>` as a collector-owned long-running loop, not as a short one-shot helper.
 - Expect one DD collector per workspace session.
 - Expect per-session state under `~/.telegram-codex/<session-id>/`.
 - Do not claim outbound audio/video sending support.

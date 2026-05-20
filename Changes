@@ -1,3 +1,28 @@
+0.17 2026-05-20
+    - made the collector-owned `dashboard telegram-codex.check-message
+      <session-id>` worker bind its explicit session suffix back into the
+      runtime env so replies and state stay under the intended
+      `~/.telegram-codex/<session-id>/` tree
+    - made collector-owned polling auto-switch into Codex-session reply mode
+      when `codex.session` exists for that session, instead of requiring a
+      separate listener-mode env override
+    - made the spawned `codex exec resume` reply subprocess use
+      `--dangerously-bypass-approvals-and-sandbox` so the automated Telegram
+      reply handoff does not hang in the default Linux sandbox path
+    - added Docker-verified regressions for legacy plural collector command
+      rewrite, persisted-session collector replies, stale pid cleanup, and
+      real `kill 0` process detection fallback
+
+0.16 2026-05-20
+    - changed the managed collector command to the session-suffixed form
+      `dashboard telegram-codex.check-message <session-id>`
+    - added a same-session pid guard so a second
+      `telegram-codex.check-message <session-id>` process exits without
+      starting duplicate polling work
+    - tightened collector healing so same-name collectors with the wrong
+      `cwd` are rewritten to the current workspace during
+      `dashboard telegram-codex.start`
+
 0.15 2026-05-20
     - moved the always-on Telegram polling path under a DD collector owned by
       `dashboard telegram-codex.start` instead of keeping the standalone

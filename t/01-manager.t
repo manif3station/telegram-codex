@@ -59,6 +59,7 @@ sub new_manager {
         sleep_runner         => $args{sleep_runner},
         codex_resume_runner  => $args{codex_resume_runner},
         command_runner       => $args{command_runner},
+        pid_check_runner     => $args{pid_check_runner},
     );
 }
 
@@ -355,7 +356,7 @@ sub new_manager {
     is( $plan->{start_collector}, 1, 'execute_start enables collector startup when autostart is enabled and a token is available' );
     is( $plan->{collector_session_id}, $manager->workspace_session_id, 'execute_start derives the collector session id from the workspace when no session env is present' );
     is( $plan->{collector_name}, 'telegram-codex-' . $manager->workspace_session_id, 'execute_start plans the DD collector name for the workspace session' );
-    is( $plan->{collector_command}, 'dashboard telegram-codex.check-messages', 'execute_start plans the collector command' );
+    is( $plan->{collector_command}, 'dashboard telegram-codex.check-message ' . $manager->workspace_session_id, 'execute_start plans the session-suffixed collector command' );
     is( $plan->{codex_session_id}, $manager->workspace_session_id, 'execute_start plans Codex replies against the workspace session when nothing is mapped yet' );
 }
 
@@ -426,11 +427,45 @@ sub new_manager {
             interval => 5,
             rotation => { lines => 100 },
             cwd      => $workspace,
-            command  => 'dashboard telegram-codex.check-messages',
+            command  => 'dashboard telegram-codex.check-message demo',
             mode     => 'singleton',
         },
         'ensure_collector_config rewrites the collector to the governed telegram-codex collector shape',
     );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $config_root = File::Spec->catdir( $home, '.developer-dashboard', 'config' );
+    make_path($config_root);
+    _write(
+        File::Spec->catfile( $config_root, 'config.json' ),
+        encode_json(
+            {
+                collectors => [
+                    {
+                        name     => 'telegram-codex-cwd-demo',
+                        interval => 5,
+                        rotation => { lines => 100 },
+                        cwd      => '/tmp/old-workspace',
+                        command  => 'dashboard telegram-codex.check-messages',
+                        mode     => 'singleton',
+                    },
+                ],
+            }
+        ),
+    );
+    my $workspace = File::Spec->catdir( $home, 'new-workspace' );
+    make_path($workspace);
+    my $manager = new_manager(
+        cwd  => $workspace,
+        home => $home,
+    );
+    my $result = $manager->ensure_collector_config( 'cwd-demo', cwd => $workspace );
+    is( $result->{created}, 0, 'ensure_collector_config treats a same-name collector with the wrong cwd as an update, not a new collector' );
+    my $saved = decode_json( $manager->read_text_file( File::Spec->catfile( $config_root, 'config.json' ) ) );
+    is( $saved->{collectors}[0]{cwd}, $workspace, 'ensure_collector_config rewrites collector cwd when the existing entry points at a different workspace' );
+    is( $saved->{collectors}[0]{command}, 'dashboard telegram-codex.check-message cwd-demo', 'ensure_collector_config rewrites the legacy plural collector command to the session-suffixed check-message form' );
 }
 
 {
@@ -496,6 +531,49 @@ sub new_manager {
         <$fh>;
     };
     is( $restart_log, "restart\ncollector\ntelegram-codex-workspace-restart-system\n", 'restart_startup_collector runs dashboard restart collector for the named session collector' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $session_dir = File::Spec->catdir( $runtime, 'session-overlap' );
+    make_path($session_dir);
+    _write( File::Spec->catfile( $session_dir, 'listener.pid' ), "424242\n" );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        pid_check_runner => sub {
+            my ($pid) = @_;
+            return $pid == 424242 ? 1 : 0;
+        },
+    );
+    my $result = $manager->execute_check_messages( 'session-overlap', 1, 0 );
+    is( $result->{skipped}, 1, 'execute_check_messages skips a second process when the same session suffix is already running' );
+    is( $result->{running_pid}, 424242, 'execute_check_messages reports the existing running pid for the same session suffix' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+    );
+    my $paths = $manager->listener_paths_for_session('session-stale-no-runner');
+    $manager->write_text_file( $paths->{pid_file}, "999999\n" );
+    my $guard = $manager->begin_check_message_session( 'session-stale-no-runner', $paths );
+    is( $guard->{already_running}, 0, 'begin_check_message_session clears a stale pid file when the real process is gone' );
+    is( $manager->read_text_file( $paths->{pid_file} ), "$$\n", 'begin_check_message_session replaces the stale pid file with the current worker pid' );
+}
+
+{
+    my $manager = new_manager;
+    ok( $manager->pid_is_running($$), 'pid_is_running uses the real kill-0 fallback when no test runner override is supplied' );
 }
 
 {
@@ -630,7 +708,7 @@ sub new_manager {
     my $skill_root = File::Spec->catdir( $home, 'skill-root' );
     my $cli_dir = File::Spec->catdir( $skill_root, 'cli' );
     make_path($cli_dir);
-    my $listen = File::Spec->catfile( $cli_dir, 'listen' );
+    my $listen = File::Spec->catfile( $cli_dir, 'check-message' );
     _write( $listen, "#!/usr/bin/env perl\nsleep 30;\n" );
     chmod 0755, $listen or die "Unable to chmod fake running listener: $!";
     my $manager = new_manager(
@@ -685,9 +763,9 @@ sub new_manager {
     my $cli_dir = File::Spec->catdir( $skill_root, 'cli' );
     make_path($cli_dir);
     my $listener_log = File::Spec->catfile( $home, 'listener.exec.log' );
-    my $listen = File::Spec->catfile( $cli_dir, 'listen' );
+    my $listen = File::Spec->catfile( $cli_dir, 'check-message' );
     _write( $listen, "#!/bin/sh\nprintf '%s\\n' \"\$TELEGRAM_CODEX_LISTENER_MODE\" \"\$TELEGRAM_CODEX_TARGET_SESSION_ID\" \"\$0\" \"\$@\" > \"$listener_log\"\n" );
-    chmod 0755, $listen or die "Unable to chmod fake listener: $!";
+    chmod 0755, $listen or die "Unable to chmod fake check-message command: $!";
     my $manager = new_manager(
         cwd  => $home,
         home => $home,
@@ -700,14 +778,20 @@ sub new_manager {
         'session-forked-22',
         mode             => 'codex-session',
         codex_session_id => 'session-forked-22',
+        reply_text       => 'listener ack',
     );
     waitpid $paths->{pid}, 0 if $paths->{pid};
+    for ( 1 .. 20 ) {
+        last if -f $listener_log;
+        select undef, undef, undef, 0.05;
+    }
     my $exec_log = do {
         open my $fh, '<', $listener_log or die $!;
         local $/;
         <$fh>;
     };
-    is( $exec_log, "codex-session\nsession-forked-22\n$listen\n0\n30\n", 'start_listener_if_needed can fork and exec the skill-owned listener command directly with managed session-response env' );
+    is( $exec_log, "codex-session\nsession-forked-22\n$listen\n0\n30\nlistener ack\n", 'start_listener_if_needed can fork and exec the skill-owned check-message command directly with managed session-response env' );
+    is( $manager->listener_command_path, $listen, 'listener_command_path resolves the skill-owned check-message command' );
 }
 
 {
@@ -715,9 +799,9 @@ sub new_manager {
     my $skill_root = File::Spec->catdir( $home, 'skill-root' );
     my $cli_dir = File::Spec->catdir( $skill_root, 'cli' );
     make_path($cli_dir);
-    my $listen = File::Spec->catfile( $cli_dir, 'listen' );
+    my $listen = File::Spec->catfile( $cli_dir, 'check-message' );
     _write( $listen, "#!/usr/bin/env perl\nsleep 30;\n" );
-    chmod 0755, $listen or die "Unable to chmod sleeping fake listener: $!";
+    chmod 0755, $listen or die "Unable to chmod sleeping fake check-message command: $!";
     my $manager = new_manager(
         cwd        => $home,
         home       => $home,
@@ -1006,6 +1090,57 @@ sub new_manager {
 }
 
 {
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my @resume_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 101,
+                        message   => {
+                            message_id => 19,
+                            text       => 'Hi',
+                            chat       => { id => 99, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        codex_resume_runner => sub {
+            my ( $session_id, $prompt, $summary ) = @_;
+            push @resume_calls, [ $session_id, $prompt, $summary ];
+            return 'Collector reply from Codex session.';
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 777, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    $manager->write_codex_target_session_id( 'skills', 'session-from-ledger' );
+    my $result = $manager->execute_check_messages( 'skills', 1, 0 );
+    is( $result->{session_id}, 'skills', 'collector-owned check-message keeps the explicit session suffix' );
+    is( $result->{processed}, 1, 'collector-owned check-message processes inbound messages for the explicit session' );
+    is( $result->{replied}, 1, 'collector-owned check-message auto-replies through the persisted Codex session target' );
+    is( scalar @resume_calls, 1, 'collector-owned check-message resumes Codex exactly once' );
+    is( $resume_calls[0][0], 'session-from-ledger', 'collector-owned check-message uses the persisted codex.session target for replies' );
+    like( $resume_calls[0][1], qr/text=Hi/, 'collector-owned check-message passes the inbound text into the Codex reply prompt' );
+    is( $post_calls[0][1]{text}, 'Collector reply from Codex session.', 'collector-owned check-message sends the Codex-generated reply text' );
+}
+
+{
     my $manager = new_manager;
     my $prompt = $manager->codex_session_reply_prompt(
         {
@@ -1074,7 +1209,7 @@ EOF
         local $/;
         <$fh>;
     };
-    like( $args, qr/^exec\nresume\n--skip-git-repo-check\n--output-last-message\n/m, 'codex_session_reply_for_update invokes codex exec resume with an output capture file' );
+    like( $args, qr/^exec\n--dangerously-bypass-approvals-and-sandbox\nresume\n--skip-git-repo-check\n--output-last-message\n/m, 'codex_session_reply_for_update invokes codex exec resume with the bypass flag and output capture file' );
     like( $args, qr/session-real-resume/, 'codex_session_reply_for_update targets the managed session id when it runs the real codex binary' );
 }
 

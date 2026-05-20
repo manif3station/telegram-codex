@@ -33,6 +33,7 @@ sub new {
         sleep_runner         => $args{sleep_runner},
         codex_resume_runner  => $args{codex_resume_runner},
         command_runner       => $args{command_runner},
+        pid_check_runner     => $args{pid_check_runner},
     }, $class;
     $self->{env} = $args{env} || $self->_merged_env;
     $self->{ua} = $args{ua} || $self->_build_ua;
@@ -47,7 +48,7 @@ sub main_reply            { return shift->_run_main( 'reply',            @_ ) }
 sub main_send_photo       { return shift->_run_main( 'send_photo',       @_ ) }
 sub main_send_document    { return shift->_run_main( 'send_document',    @_ ) }
 sub main_auto_reply_start { return shift->_run_main( 'auto_reply_start', @_ ) }
-sub main_check_messages   { return shift->_run_main( 'check_messages',   @_ ) }
+sub main_check_message    { return shift->_run_main( 'check_messages',   @_ ) }
 sub main_start            { return shift->_run_main( 'start',            @_ ) }
 
 sub _run_main {
@@ -292,7 +293,11 @@ sub execute_listen {
 
 sub execute_check_messages {
     my ( $self, @argv ) = @_;
-    die "Usage: dashboard telegram-codex.check-messages [MAX_CYCLES] [POLL_TIMEOUT] [REPLY_TEXT]\n" if @argv > 3;
+    die "Usage: dashboard telegram-codex.check-message [SESSION_ID] [MAX_CYCLES] [POLL_TIMEOUT] [REPLY_TEXT]\n" if @argv > 4;
+    my $session_id;
+    if ( @argv && $argv[0] !~ /\A\d+\z/ ) {
+        $session_id = shift @argv;
+    }
     my $max_cycles;
     my $poll_timeout = 30;
     if ( @argv && $argv[0] =~ /\A\d+\z/ ) {
@@ -306,8 +311,19 @@ sub execute_check_messages {
       ? join( q{ }, @argv )
       : undef;
 
-    my $paths = $self->listener_paths;
+    $session_id = $self->listener_session_id if !defined $session_id || $session_id eq q{};
+    $self->{env}{TELEGRAM_CODEX_SESSION_ID} = $session_id;
+    $ENV{TELEGRAM_CODEX_SESSION_ID} = $session_id;
+    my $paths = $self->listener_paths_for_session($session_id);
     make_path( $paths->{runtime_dir} ) if !-d $paths->{runtime_dir};
+    my $guard = $self->begin_check_message_session($session_id, $paths);
+    return {
+        mode        => 'check_message',
+        session_id  => $session_id,
+        skipped     => 1,
+        running_pid => $guard->{running_pid},
+        pid_file    => $paths->{pid_file},
+    } if $guard->{already_running};
     my $offset = $self->read_listener_offset( $paths->{offset_file} );
     my $recovered_offset = $self->recover_listener_offset_from_inbox( $paths->{inbox_file} );
     if ( defined $recovered_offset ) {
@@ -402,15 +418,17 @@ sub execute_check_messages {
     }
 
     return {
-        mode       => 'check_messages',
-        cycles     => $cycles,
-        processed  => $processed,
-        replied    => $replied,
+        mode         => 'check_message',
+        session_id   => $session_id,
+        cycles       => $cycles,
+        processed    => $processed,
+        replied      => $replied,
         get_errors   => \@get_errors,
         reply_errors => \@reply_errors,
-        next_offset => $offset,
-        offset_file => $paths->{offset_file},
-        inbox_file  => $paths->{inbox_file},
+        next_offset  => $offset,
+        offset_file  => $paths->{offset_file},
+        inbox_file   => $paths->{inbox_file},
+        pid_file     => $paths->{pid_file},
     };
 }
 
@@ -618,7 +636,7 @@ sub codex_start_plan {
         collector_session_id => $collector_session_id,
         collector_name       => $self->collector_name_for_session($collector_session_id),
         collector_cwd        => $self->{cwd},
-        collector_command    => 'dashboard telegram-codex.check-messages',
+        collector_command    => 'dashboard telegram-codex.check-message ' . $self->normalise_session_id($collector_session_id),
         codex_session_id     => $codex_session_id,
     };
 }
@@ -697,7 +715,7 @@ sub collector_definition {
         interval => 5,
         rotation => { lines => 100 },
         cwd      => $cwd,
-        command  => 'dashboard telegram-codex.check-messages',
+        command  => 'dashboard telegram-codex.check-message ' . $self->normalise_session_id($session_id),
         mode     => 'singleton',
     };
 }
@@ -721,6 +739,35 @@ sub read_json_file_or_default {
 sub workspace_session_id {
     my ($self) = @_;
     return $self->normalise_session_id( $self->basename( $self->{cwd} ) );
+}
+
+sub begin_check_message_session {
+    my ( $self, $session_id, $paths ) = @_;
+    my $pid_file = $paths->{pid_file};
+    if ( -f $pid_file ) {
+        my $existing_pid = $self->read_text_file($pid_file);
+        $existing_pid =~ s/\s+\z//;
+        if ( $existing_pid ne q{} && $existing_pid =~ /\A\d+\z/ && $existing_pid != $$ && $self->pid_is_running($existing_pid) ) {
+            return {
+                already_running => 1,
+                running_pid     => 0 + $existing_pid,
+            };
+        }
+        unlink $pid_file;
+    }
+    $self->write_text_file( $pid_file, "$$\n" );
+    return {
+        already_running => 0,
+        pid_file        => $pid_file,
+    };
+}
+
+sub pid_is_running {
+    my ( $self, $pid ) = @_;
+    if ( $self->{pid_check_runner} ) {
+        return $self->{pid_check_runner}->($pid) ? 1 : 0;
+    }
+    return kill 0, $pid;
 }
 
 sub start_listener_if_needed {
@@ -780,9 +827,7 @@ sub start_listener_if_needed {
 
 sub listener_command_path {
     my ($self) = @_;
-    my $check_messages = File::Spec->catfile( $self->{skill_root}, 'cli', 'check-messages' );
-    return $check_messages if -f $check_messages;
-    return File::Spec->catfile( $self->{skill_root}, 'cli', 'listen' );
+    return File::Spec->catfile( $self->{skill_root}, 'cli', 'check-message' );
 }
 
 sub plugin_script_python {
@@ -1086,7 +1131,12 @@ sub inbox_contains_update_id {
 
 sub listener_reply_message_for_update {
     my ( $self, $summary, $reply_text ) = @_;
-    my $mode = $self->env_value('TELEGRAM_CODEX_LISTENER_MODE') || 'static';
+    my $mode = $self->env_value('TELEGRAM_CODEX_LISTENER_MODE');
+    if ( ( !defined $mode || $mode eq q{} ) && ( !defined $reply_text || $reply_text eq q{} ) ) {
+        $mode = 'codex-session'
+          if defined $self->read_codex_target_session_id( $self->listener_paths->{target_session_file} );
+    }
+    $mode ||= 'static';
     if ( $mode eq 'codex-session' ) {
         return $self->codex_session_reply_for_update($summary);
     }
@@ -1110,6 +1160,7 @@ sub codex_session_reply_for_update {
     my @command = (
         $real_codex_bin,
         'exec',
+        '--dangerously-bypass-approvals-and-sandbox',
         'resume',
         '--skip-git-repo-check',
         '--output-last-message',
@@ -1277,7 +1328,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.15',
+        agent   => 'telegram-codex/0.16',
         timeout => 60,
     );
     return $ua;

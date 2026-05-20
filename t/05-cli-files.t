@@ -8,7 +8,7 @@ my @cli_files = qw(
   Makefile
   cli/install
   cli/start
-  cli/check-messages
+  cli/check-message
   cli/get-me
   cli/updates
   cli/download

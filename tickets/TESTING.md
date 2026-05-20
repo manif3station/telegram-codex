@@ -15,18 +15,23 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
-- Docker functional gate for `DD-284`:
-  - `Files=6, Tests=263`
+- Docker functional gate for `DD-285`:
+  - `Files=6, Tests=280`
   - `Result: PASS`
-- Docker covered gate for `DD-284`:
-  - `Files=6, Tests=263`
+- Docker covered gate for `DD-285`:
+  - `Files=6, Tests=280`
   - `lib/Telegram/Codex/Manager.pm` statement `100.0`
   - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
 - Collector runtime regressions:
   - `dashboard telegram-codex.start` now creates or heals exactly one `telegram-codex-<session-id>` collector in `~/.developer-dashboard/config/config.json`
   - duplicate collector entries for the same session are removed automatically
+  - same-name collectors with the wrong `cwd` are rewritten to the current workspace
+  - legacy plural collector commands are rewritten to `dashboard telegram-codex.check-message <session-id>`
   - the managed startup path persists the active Codex reply target in `~/.telegram-codex/<session-id>/codex.session`
-  - the collector-owned `dashboard telegram-codex.check-messages` loop is now the governed always-on polling path
+  - the collector-owned `dashboard telegram-codex.check-message <session-id>` loop is now the governed always-on polling path
+  - the same session-suffixed `check-message` process does not start a second overlapping polling worker
+  - the collector-owned `check-message <session-id>` worker now binds the explicit session suffix into runtime state and auto-resumes the persisted `codex.session` target for replies
+  - the spawned `codex exec resume` reply subprocess now uses the bypass flag needed for automated non-interactive Telegram reply generation on this machine
 - Docker functional gate for `DD-276`:
   - `Files=6, Tests=202`
   - `Result: PASS`

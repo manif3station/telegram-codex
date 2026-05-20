@@ -51,7 +51,7 @@ dashboard restart collector telegram-codex-<session-id>
 The collector command is:
 
 ```bash
-dashboard telegram-codex.check-messages
+dashboard telegram-codex.check-message <session-id>
 ```
 
 This is a long-running polling loop, not a short one-shot helper.
@@ -64,12 +64,12 @@ The collector definition installed or healed by `telegram-codex.start` is:
   "interval": 5,
   "rotation": { "lines": 100 },
   "cwd": "<workspace where start was run>",
-  "command": "dashboard telegram-codex.check-messages",
+  "command": "dashboard telegram-codex.check-message <session-id>",
   "mode": "singleton"
 }
 ```
 
-Dashboard may try to schedule it every five seconds, but singleton mode prevents a second copy from starting while the existing loop is still running.
+Dashboard may try to schedule it every five seconds, but singleton mode plus the same-session pid guard prevents a second `check-message <session-id>` copy from starting while the existing loop is still running. If `~/.telegram-codex/<session-id>/codex.session` exists, the worker automatically resumes that Codex session to generate the Telegram reply.
 
 Stop it with Dashboard:
 
@@ -138,7 +138,7 @@ Per-session runtime state lives under:
 
 `listener.inbox.jsonl` keeps the per-session inbound update ledger.
 
-`codex.session` keeps the real Codex session that should be resumed to generate Telegram replies.
+`codex.session` keeps the real Codex session that the collector-owned `check-message <session-id>` worker resumes to generate Telegram replies.
 
 ## Media Handling Rule
 
