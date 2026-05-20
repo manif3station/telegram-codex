@@ -73,12 +73,20 @@ sub execute_install {
             token            => $token,
         );
     }
-    my $codex_wrapper = $self->install_codex_wrapper;
+    my $codex_wrapper = $self->install_codex_command_wrapper;
     return {
         mode      => 'install',
         plugin    => 'telegram-codex',
         installed => \@installed,
         codex_wrapper => $codex_wrapper,
+    };
+}
+
+sub auto_setup {
+    my ($self) = @_;
+    return {
+        mode          => 'auto_setup',
+        codex_wrapper => $self->install_codex_command_wrapper,
     };
 }
 
@@ -221,6 +229,26 @@ sub execute_listen {
     my $paths = $self->listener_paths;
     make_path( $paths->{runtime_dir} ) if !-d $paths->{runtime_dir};
     my $offset = $self->read_listener_offset( $paths->{offset_file} );
+    my $prime_latest = ( $self->env_value('TELEGRAM_CODEX_LISTENER_PRIME_LATEST') || q{} ) =~ /\A(?:1|true|yes|on)\z/i ? 1 : 0;
+    if ( !defined $offset && $prime_latest ) {
+        my $prime_offset;
+        while (1) {
+            my %prime_params = (
+                limit   => 100,
+                timeout => 0,
+            );
+            $prime_params{offset} = $prime_offset if defined $prime_offset;
+            my $prime_result = $self->telegram_get( 'getUpdates', \%prime_params );
+            my @prime_updates = @{ $prime_result->{result} || [] };
+            last if !@prime_updates;
+            $prime_offset = $prime_updates[-1]{update_id} + 1;
+            last if @prime_updates < 100;
+        }
+        if ( defined $prime_offset ) {
+            $offset = $prime_offset;
+            $self->write_listener_offset( $paths->{offset_file}, $offset );
+        }
+    }
     my $cycles = 0;
     my $processed = 0;
     my $replied = 0;
@@ -290,12 +318,12 @@ sub plugin_targets {
     return @targets;
 }
 
-sub install_codex_wrapper {
+sub install_codex_command_wrapper {
     my ($self) = @_;
-    my $paths = $self->codex_wrapper_paths;
+    my $paths = $self->codex_command_wrapper_paths;
     my $real_codex_path = $self->resolve_real_codex_bin($paths);
     $self->write_text_file( $paths->{real_bin_file}, $real_codex_path . "\n" );
-    my $script = $self->codex_wrapper_script(
+    my $script = $self->codex_command_wrapper_script(
         real_codex_path => $real_codex_path,
         real_bin_file   => $paths->{real_bin_file},
     );
@@ -408,9 +436,7 @@ For immediate bot replies outside manual Codex polling, run the skill listener:
 
 - `dashboard telegram-codex.listen`
 
-For automatic listener startup when Codex launches, use the installed wrapper:
-
-- `~/.developer-dashboard/cli/codex`
+After `dashboard skills install telegram-codex`, normal `codex` startup uses the managed user-PATH wrapper installed by this skill.
 EOF
 }
 
@@ -773,14 +799,41 @@ if __name__ == "__main__":
 EOF
 }
 
-sub codex_wrapper_paths {
+sub codex_command_wrapper_paths {
     my ($self) = @_;
-    my $cli_root = $self->resolve_path('~/.developer-dashboard/cli');
+    my $wrapper_dir = $self->select_codex_wrapper_dir;
+    my $runtime_root = $self->resolve_path('~/.telegram-codex');
     return {
-        cli_root       => $cli_root,
-        wrapper_path   => File::Spec->catfile( $cli_root, 'codex' ),
-        real_bin_file  => File::Spec->catfile( $cli_root, '.telegram-codex-codex-real-bin' ),
+        wrapper_dir    => $wrapper_dir,
+        wrapper_path   => File::Spec->catfile( $wrapper_dir, 'codex' ),
+        real_bin_file  => File::Spec->catfile( $runtime_root, '.codex-real-bin' ),
     };
+}
+
+sub select_codex_wrapper_dir {
+    my ($self) = @_;
+    my @preferred = map { $self->resolve_path($_) } qw(~/.local/bin ~/bin);
+    my %preferred = map { $_ => 1 } @preferred;
+    my @path_entries = split /:/, ( $self->env_value('PATH') || $ENV{PATH} || q{} );
+    my %seen;
+    my @ordered = grep { defined $_ && $_ ne q{} && !$seen{$_}++ } map { $self->resolve_path($_) } @path_entries;
+    my @candidates = grep { $preferred{$_} } @ordered;
+    push @candidates, grep { !$seen{$_}++ } @preferred;
+
+    for my $dir (@candidates) {
+        my $path = File::Spec->catfile( $dir, 'codex' );
+        next if !-f $path;
+        my $content = eval { $self->read_text_file($path) };
+        next if $@;
+        return $dir if $content =~ /telegram-codex-managed-codex-wrapper/;
+    }
+
+    for my $dir (@candidates) {
+        my $path = File::Spec->catfile( $dir, 'codex' );
+        return $dir if !-e $path;
+    }
+
+    return $candidates[0];
 }
 
 sub resolve_real_codex_bin {
@@ -802,12 +855,13 @@ sub resolve_real_codex_bin {
     die "Unable to resolve the real codex binary path\n";
 }
 
-sub codex_wrapper_script {
+sub codex_command_wrapper_script {
     my ( $self, %args ) = @_;
     my $real_codex_path = $args{real_codex_path};
     my $real_bin_file = $args{real_bin_file};
     return <<"EOF";
 #!/bin/sh
+# telegram-codex-managed-codex-wrapper
 set -eu
 
 REAL_CODEX_BIN=\${CODEX_REAL_BIN:-$real_codex_path}
@@ -839,6 +893,7 @@ if [ -n "\${TELEGRAM_BOT_TOKEN:-}" ]; then
   if [ "\$LISTENER_RUNNING" -ne 1 ]; then
     (
       export TELEGRAM_CODEX_SESSION_ID="\$SESSION_ID"
+      export TELEGRAM_CODEX_LISTENER_PRIME_LATEST=1
       nohup dashboard telegram-codex.listen >>"\$LOG_FILE" 2>&1 &
       echo \$! >"\$PID_FILE"
     )
@@ -1098,7 +1153,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.04',
+        agent   => 'telegram-codex/0.05',
         timeout => 60,
     );
     return $ua;

@@ -10,7 +10,8 @@ It gives you a governed path to connect Telegram Bot API with Codex so you can p
 
 It now also supports a long-poll listener mode so the bot can stay active and reply immediately without waiting for a manual Codex inbox check.
 
-When you launch Codex through the installed `~/.developer-dashboard/cli/codex` wrapper, the listener now starts automatically for that Codex session.
+After `dashboard skills install telegram-codex`, normal `codex` startup uses a managed wrapper from your user PATH, so the listener starts automatically for that Codex session.
+On the first auto-start with no stored offset, it primes to the latest Telegram update and does not auto-reply to old backlog messages.
 
 ## Problem It Solves
 
@@ -63,11 +64,13 @@ Then install the local Codex plugin bridge with a Telegram bot token:
 dashboard telegram-codex.install 123456:telegram-bot-token
 ```
 
-That install step also writes a `codex` launcher wrapper to:
+Normal skill install also provisions a managed `codex` wrapper in the first supported user PATH directory, preferring:
 
-- `~/.developer-dashboard/cli/codex`
+- `~/.local/bin/codex`
+- `~/bin/codex`
 
-Start Codex through that wrapper if you want the Telegram listener to come up automatically with the session.
+That managed wrapper starts the Telegram listener automatically for future Codex sessions when `TELEGRAM_BOT_TOKEN` is available.
+On the first auto-start with no stored offset, it primes to the latest Telegram update so old backlog messages are not auto-replied.
 
 After install, regular commands can discover `TELEGRAM_BOT_TOKEN` automatically from:
 
@@ -158,7 +161,7 @@ dashboard telegram-codex.listen
 Launch Codex with automatic Telegram listener startup:
 
 ```bash
-~/.developer-dashboard/cli/codex
+codex
 ```
 
 By default the listener keeps runtime state under:
@@ -186,7 +189,7 @@ This skill does not add a browser interface.
 ## Normal Cases
 
 ```text
-Use `dashboard telegram-codex.install` once per machine or whenever you want to refresh the local Codex Telegram plugin files and the Codex launcher wrapper.
+Use `dashboard telegram-codex.install` once per machine or whenever you want to refresh the local Codex Telegram plugin files. Normal `dashboard skills install telegram-codex` already provisions the managed `codex` wrapper.
 ```
 
 ```text
@@ -206,7 +209,11 @@ Use `dashboard telegram-codex.listen` when you want immediate bot acknowledgemen
 ```
 
 ```text
-Use `~/.developer-dashboard/cli/codex` when you want Codex startup itself to bring the Telegram listener up automatically for the current session.
+Use `codex` after `dashboard skills install telegram-codex` when you want Codex startup itself to bring the Telegram listener up automatically for the current session.
+```
+
+```text
+On the first managed `codex` auto-start with no stored listener offset, the listener primes itself to the latest Telegram update and waits for new messages instead of replying to older backlog items.
 ```
 
 ```text
@@ -236,7 +243,7 @@ If you restart `dashboard telegram-codex.listen` inside the same Codex session i
 ```
 
 ```text
-If you start Codex through some other binary instead of `~/.developer-dashboard/cli/codex`, the listener will not auto-start for that session.
+If your shell resolves `codex` to some other binary before `~/.local/bin` or `~/bin`, the listener will not auto-start for that session until your PATH order is corrected.
 ```
 
 ## Agent Handoff
@@ -248,7 +255,8 @@ If you start Codex through some other binary instead of `~/.developer-dashboard/
 - `docs/overview.md`
 - `docs/usage.md`
 - `docs/changes/2026-05-20-initial-release.md`
-- `docs/changes/2026-05-20-codex-launcher-wrapper-autostart.md`
+- `docs/changes/2026-05-20-codex-command-wrapper-autostart.md`
+- `docs/changes/2026-05-20-no-backlog-autostart-priming.md`
 
 ## License
 

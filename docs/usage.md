@@ -14,7 +14,7 @@ dashboard telegram-codex.install 123456:telegram-bot-token
 
 That command writes the `telegram-codex` local plugin, the stdio MCP server config, the plugin-local `.env` with the bot token, and the marketplace entry that exposes the plugin to Codex.
 
-It also writes a Codex launcher wrapper to `~/.developer-dashboard/cli/codex`.
+Normal `dashboard skills install telegram-codex` also provisions a managed `codex` wrapper in the first supported user PATH directory, preferring `~/.local/bin/codex` and then `~/bin/codex`.
 
 After install, the regular commands can discover `TELEGRAM_BOT_TOKEN` automatically from the current project `.env`, a parent/root `.env`, the skill `.env`, or the live process environment.
 
@@ -28,13 +28,15 @@ cd ~/projects/skills/skills/telegram-codex
 ## Start Codex With Automatic Telegram Listener Startup
 
 ```bash
-~/.developer-dashboard/cli/codex
+codex
 ```
 
 That wrapper starts one `telegram-codex` listener per Codex session when:
 
 - `TELEGRAM_BOT_TOKEN` is available
 - `CODEX_SESSION_ID` or `TELEGRAM_CODEX_SESSION_ID` is available
+
+On the first auto-start with no stored listener offset, it primes to the latest Telegram update and waits for new messages instead of replying to older backlog items.
 
 It records wrapper-managed listener state under:
 

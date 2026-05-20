@@ -80,13 +80,29 @@ sub new_manager {
     my $market_data = decode_json( $manager->read_text_file($marketplace) );
     is( $market_data->{plugins}[0]{name}, 'telegram-codex', 'install registers plugin in marketplace' );
     is( $result->{codex_wrapper}{real_codex_path}, '/opt/codex/bin/codex-real', 'install records the wrapped real codex binary path' );
-    my $wrapper_path = File::Spec->catfile( $home, '.developer-dashboard', 'cli', 'codex' );
-    ok( -f $wrapper_path, 'install writes the codex startup wrapper' );
+    my $wrapper_path = $result->{codex_wrapper}{wrapper_path};
+    ok( -f $wrapper_path, 'install writes the codex command wrapper into the user PATH' );
     my $wrapper = $manager->read_text_file($wrapper_path);
     like( $wrapper, qr/dashboard telegram-codex\.listen/, 'wrapper starts the telegram listener through the dashboard command surface' );
     like( $wrapper, qr/listener\.pid/, 'wrapper persists a per-session listener pid file' );
     like( $wrapper, qr/listener\.log/, 'wrapper persists a per-session listener log file' );
     like( $wrapper, qr/exec "\$REAL_CODEX_BIN" "\$@"/, 'wrapper execs the real codex binary after listener bootstrap' );
+    like( $wrapper, qr/telegram-codex-managed-codex-wrapper/, 'wrapper is marked as telegram-codex-managed' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            CODEX_REAL_BIN => '/opt/codex/bin/codex-real',
+            PATH           => join( q{:}, File::Spec->catdir( $home, '.local', 'bin' ), '/usr/bin' ),
+        },
+    );
+    my $result = $manager->auto_setup;
+    is( $result->{mode}, 'auto_setup', 'auto_setup reports its mode' );
+    ok( -f File::Spec->catfile( $home, '.local', 'bin', 'codex' ), 'auto_setup provisions the codex wrapper without requiring plugin install' );
 }
 
 {
@@ -261,20 +277,22 @@ sub new_manager {
             TELEGRAM_BOT_TOKEN => 'token-xyz',
         },
     );
-    my $paths = $manager->codex_wrapper_paths;
+    my $paths = $manager->codex_command_wrapper_paths;
     is( $manager->resolve_real_codex_bin($paths), $real_codex, 'resolve_real_codex_bin detects the current codex binary from PATH' );
 }
 
 {
     my $home = tempdir( CLEANUP => 1 );
-    my $cli_root = File::Spec->catdir( $home, '.developer-dashboard', 'cli' );
-    make_path($cli_root);
-    my $wrapper_path = File::Spec->catfile( $cli_root, 'codex' );
+    my $wrapper_root = File::Spec->catdir( $home, '.local', 'bin' );
+    make_path($wrapper_root);
+    my $wrapper_path = File::Spec->catfile( $wrapper_root, 'codex' );
     my $stored_real  = '/opt/codex/bin/codex-real';
-    _write( File::Spec->catfile( $cli_root, '.telegram-codex-codex-real-bin' ), "$stored_real\n" );
-    _write( $wrapper_path, "#!/bin/sh\nexit 0\n" );
+    my $runtime_root = File::Spec->catdir( $home, '.telegram-codex' );
+    make_path($runtime_root);
+    _write( File::Spec->catfile( $runtime_root, '.codex-real-bin' ), "$stored_real\n" );
+    _write( $wrapper_path, "#!/bin/sh\n# telegram-codex-managed-codex-wrapper\nexit 0\n" );
     chmod 0755, $wrapper_path or die "Unable to chmod stored wrapper: $!";
-    local $ENV{PATH} = $cli_root;
+    local $ENV{PATH} = $wrapper_root;
     my $manager = new_manager(
         cwd  => $home,
         home => $home,
@@ -282,15 +300,15 @@ sub new_manager {
             TELEGRAM_BOT_TOKEN => 'token-xyz',
         },
     );
-    my $paths = $manager->codex_wrapper_paths;
+    my $paths = $manager->codex_command_wrapper_paths;
     is( $manager->resolve_real_codex_bin($paths), $stored_real, 'resolve_real_codex_bin falls back to the stored real codex path when PATH resolves the wrapper itself' );
 }
 
 {
     my $home = tempdir( CLEANUP => 1 );
-    my $cli_root = File::Spec->catdir( $home, '.developer-dashboard', 'cli' );
-    make_path($cli_root);
-    local $ENV{PATH} = $cli_root;
+    my $wrapper_root = File::Spec->catdir( $home, '.local', 'bin' );
+    make_path($wrapper_root);
+    local $ENV{PATH} = $wrapper_root;
     my $manager = new_manager(
         cwd  => $home,
         home => $home,
@@ -298,9 +316,43 @@ sub new_manager {
             TELEGRAM_BOT_TOKEN => 'token-xyz',
         },
     );
-    my $paths = $manager->codex_wrapper_paths;
+    my $paths = $manager->codex_command_wrapper_paths;
     my $error = eval { $manager->resolve_real_codex_bin($paths); 1 } ? q{} : $@;
     like( $error, qr/Unable to resolve the real codex binary path/, 'resolve_real_codex_bin fails explicitly when no real codex binary path can be found' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $local_bin = File::Spec->catdir( $home, '.local', 'bin' );
+    my $home_bin  = File::Spec->catdir( $home, 'bin' );
+    make_path($local_bin);
+    make_path($home_bin);
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            PATH => join( q{:}, $home_bin, $local_bin, '/usr/bin' ),
+        },
+    );
+    is( $manager->select_codex_wrapper_dir, $home_bin, 'select_codex_wrapper_dir uses the first supported user PATH directory' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $local_bin = File::Spec->catdir( $home, '.local', 'bin' );
+    my $home_bin  = File::Spec->catdir( $home, 'bin' );
+    make_path($local_bin);
+    make_path($home_bin);
+    _write( File::Spec->catfile( $local_bin, 'codex' ), "#!/bin/sh\nexit 0\n" );
+    _write( File::Spec->catfile( $home_bin,  'codex' ), "#!/bin/sh\nexit 0\n" );
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            PATH => join( q{:}, $local_bin, $home_bin, '/usr/bin' ),
+        },
+    );
+    is( $manager->select_codex_wrapper_dir, $local_bin, 'select_codex_wrapper_dir falls back to the first supported candidate when all supported codex paths already exist' );
 }
 
 {
@@ -369,6 +421,96 @@ sub new_manager {
     is( decode_json( $entries[1] )->{document}{file_name}, 'report.pdf', 'listen logs document metadata in inbox ledger' );
     is( $result->{offset_file}, $offset_file, 'listen reports the session-specific offset path' );
     is( $result->{inbox_file}, $inbox_file, 'listen reports the session-specific inbox path' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @get_calls;
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN                   => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR           => $runtime,
+            CODEX_SESSION_ID                     => 'session-prime-latest',
+            TELEGRAM_CODEX_LISTENER_PRIME_LATEST => '1',
+        },
+        get_runner => sub {
+            my ( $method, $params ) = @_;
+            push @get_calls, [ $method, { %{$params} } ];
+            return {
+                ok     => JSON::XS::true,
+                result => !defined $params->{offset}
+                  ? [
+                        { update_id => 90, message => { message_id => 1, text => 'old one', chat => { id => 88, type => 'private' } } },
+                        { update_id => 91, message => { message_id => 2, text => 'old two', chat => { id => 88, type => 'private' } } },
+                    ]
+                  : [],
+            };
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return { ok => JSON::XS::true, result => { message_id => 1 } };
+        },
+    );
+    my $result = $manager->execute_listen( 1, 0 );
+    is( $result->{processed}, 0, 'prime-latest auto-start does not process old backlog messages on the first cycle' );
+    is( $result->{replied}, 0, 'prime-latest auto-start does not reply to old backlog messages' );
+    is( $manager->read_text_file( $result->{offset_file} ), "92\n", 'prime-latest auto-start persists the primed next offset' );
+    is( scalar @post_calls, 0, 'prime-latest auto-start does not send message replies for old backlog items' );
+    is_deeply( $get_calls[0][1], { limit => 100, timeout => 0 }, 'prime-latest auto-start first scans the pending Telegram backlog without an offset' );
+    is_deeply( $get_calls[1][1], { limit => 20, timeout => 0, offset => 92 }, 'prime-latest auto-start begins normal listening from the primed offset' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @get_calls;
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN                   => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR           => $runtime,
+            CODEX_SESSION_ID                     => 'session-prime-then-reply',
+            TELEGRAM_CODEX_LISTENER_PRIME_LATEST => '1',
+        },
+        get_runner => sub {
+            my ( $method, $params ) = @_;
+            push @get_calls, [ $method, { %{$params} } ];
+            return {
+                ok     => JSON::XS::true,
+                result => !defined $params->{offset}
+                  ? [
+                        { update_id => 100, message => { message_id => 1, text => 'old one', chat => { id => 88, type => 'private' } } },
+                        { update_id => 101, message => { message_id => 2, text => 'old two', chat => { id => 88, type => 'private' } } },
+                    ]
+                  : [
+                        { update_id => 102, message => { message_id => 3, text => 'new one', chat => { id => 88, type => 'private' } } },
+                    ],
+            };
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return { ok => JSON::XS::true, result => { message_id => 200 } };
+        },
+    );
+    my $result = $manager->execute_listen( 1, 0 );
+    is( $result->{processed}, 1, 'prime-latest auto-start still processes new messages after priming the old backlog away' );
+    is( $result->{replied}, 1, 'prime-latest auto-start still replies to new messages after priming' );
+    is( $manager->read_text_file( $result->{offset_file} ), "103\n", 'prime-latest auto-start advances offset after the new message cycle' );
+    is_deeply(
+        $post_calls[0][1],
+        {
+            chat_id             => 88,
+            text                => 'telegram-codex listener is live. Your message was received and queued for Codex.',
+            reply_to_message_id => 3,
+        },
+        'prime-latest auto-start replies only to the first truly new message after priming',
+    );
 }
 
 {

@@ -16,15 +16,15 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 ## Latest Evidence
 
 - Docker functional gate:
-  - `Files=6, Tests=145`
+  - `Files=6, Tests=162`
   - `Result: PASS`
 - Docker covered gate:
   - `lib/Telegram/Codex/Manager.pm` statement `100.0`
   - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
   - listener runtime partitioning by Codex session id is covered
 - Docker listener gate:
-  - `Files=6, Tests=145`
-  - listener state, session-specific runtime paths, inbox ledger, wrapper executability, Codex launcher autostart wrapper generation, `.env` discovery paths, and audio/video/voice reply eligibility are covered
+  - `Files=6, Tests=162`
+  - listener state, session-specific runtime paths, inbox ledger, wrapper executability, managed `codex` command-path autostart generation, no-backlog first auto-start behavior, `.env` discovery paths, and audio/video/voice reply eligibility are covered
 - Live Telegram proof on 2026-05-20:
   - `./cli/install` created the plugin under `~/.codex/.tmp/plugins/plugins/telegram-codex` and the mirror root when present
   - `./cli/get-me` resolved the configured bot identity successfully
@@ -34,3 +34,6 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
   - `./cli/listen` is now documented as the always-on path, with persistent offset and inbox state under `~/.telegram-codex/<session-id>/`
   - the listener reply rules now cover inbound text, photos, video, audio, voice, and document/file updates
   - a long-running listener session was started from the skill checkout with the listener offset pre-seeded to the latest known Telegram update
+  - `PERL5LIB=lib perl -MTelegram::Codex::Manager -e 'Telegram::Codex::Manager->new()->auto_setup()'` wrote a managed `codex` wrapper into `~/.local/bin/codex`
+  - a fresh shell resolved `codex` to that managed wrapper instead of the npm global binary
+  - direct listener execution with `TELEGRAM_CODEX_LISTENER_PRIME_LATEST=1` was covered in Docker to prove first auto-start primes the latest offset and does not auto-reply to backlog messages

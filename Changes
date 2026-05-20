@@ -1,3 +1,17 @@
+0.05 2026-05-20
+    - fixed Codex auto-start integration so `dashboard skills install
+      telegram-codex` provisions a managed `codex` wrapper in the user PATH
+      instead of assuming `~/.developer-dashboard/cli/codex` is the active
+      launcher
+    - made managed `codex` auto-start prime the Telegram offset to the latest
+      pending update on first start so old backlog messages do not get
+      auto-replied and spam the chat
+    - added a skill `Makefile` install hook so normal skill installation is
+      enough to set up Telegram listener auto-start for later `codex` launches
+    - updated the docs and Docker-verified regressions to prove the managed
+      `codex` command path, session pid/log files, no-backlog auto-start
+      behavior, and auto-setup behavior
+
 0.04 2026-05-20
     - fixed the install docs to use `dashboard skills install telegram-codex`
       instead of a checkout path

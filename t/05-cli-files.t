@@ -5,6 +5,7 @@ use warnings;
 use Test::More;
 
 my @cli_files = qw(
+  Makefile
   cli/install
   cli/get-me
   cli/updates
@@ -18,6 +19,10 @@ my @cli_files = qw(
 
 for my $path (@cli_files) {
     ok( -f $path, "$path exists" );
+    if ( $path eq 'Makefile' ) {
+        pass('Makefile is present for skill-install auto-setup');
+        next;
+    }
     ok( -x $path, "$path is executable" );
     my $content = do {
         open my $fh, '<', $path or die $!;

@@ -122,7 +122,7 @@ dashboard telegram-codex.listen
 Launch Codex with listener auto-start:
 
 ```bash
-~/.developer-dashboard/cli/codex
+codex
 ```
 
 ## Listener Behavior
@@ -145,11 +145,12 @@ Launch Codex with listener auto-start:
   - voice
   - documents/files
 
-The installed `~/.developer-dashboard/cli/codex` wrapper:
+The managed `codex` wrapper installed into the user PATH:
 
 - starts the listener automatically before Codex launches
 - keeps one listener per session id
 - persists wrapper-managed pid and log files under `~/.telegram-codex/<session-id>/`
+- primes to the latest Telegram update on the first auto-start when no stored offset exists, so old backlog messages are not auto-replied
 
 ## Running The Listener
 
@@ -179,5 +180,6 @@ nohup ./cli/listen >/tmp/telegram-codex-listener.log 2>&1 &
 - Do not claim audio or video sending support; only text, photo, and document sending are implemented.
 - Do use the listener when immediate replies are required.
 - Do use a stable `CODEX_SESSION_ID` or `TELEGRAM_CODEX_SESSION_ID` when you want a later Codex session to resume the same Telegram conversation history cleanly.
-- Do launch Codex through `~/.developer-dashboard/cli/codex` when Telegram is meant to be the primary communication channel.
+- Do launch Codex through the managed `codex` command path when Telegram is meant to be the primary communication channel.
+- Do expect the first managed auto-start to ignore stale backlog messages and only auto-reply to new inbound messages after the listener offset is primed.
 - Do stop the listener if automatic replies become noisy or unwanted.
