@@ -15,6 +15,13 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-287`:
+  - `Files=6, Tests=323`
+  - `Result: PASS`
+- Docker covered gate for `DD-287`:
+  - `Files=6, Tests=323`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
 - Docker functional gate for `DD-285`:
   - `Files=6, Tests=282`
   - `Result: PASS`
@@ -22,6 +29,14 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
   - `Files=6, Tests=282`
   - `lib/Telegram/Codex/Manager.pm` statement `100.0`
   - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Typing-indicator regressions:
+  - managed collector-owned replies now send Telegram `sendChatAction` with `typing` before the final `sendMessage`
+  - typing-action failures are non-fatal and do not block Codex reply generation or final Telegram delivery
+- Managed media regressions:
+  - inbound managed photo messages are downloaded into the session runtime before Codex replies
+  - the Codex reply prompt now includes downloaded `*_local_path` values and explicitly states those files are already local
+  - managed reply directives can route outbound photo, audio, and document sends instead of only `sendMessage`
+  - `dashboard telegram-codex.send-audio` is covered alongside the existing photo and document sends
 - Collector runtime regressions:
   - `dashboard telegram-codex.start` now creates or heals exactly one `telegram-codex-<session-id>` collector in `~/.developer-dashboard/config/config.json`
   - duplicate collector entries for the same session are removed automatically
@@ -140,3 +155,10 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
   - `PERL5LIB=lib perl -MTelegram::Codex::Manager -e 'Telegram::Codex::Manager->new()->auto_setup()'` wrote a managed `codex` wrapper into `~/.local/bin/codex`
   - a fresh shell resolved `codex` to that managed wrapper instead of the npm global binary
   - direct listener execution with `TELEGRAM_CODEX_LISTENER_PRIME_LATEST=1` was covered in Docker to prove first auto-start primes the latest offset and does not auto-reply to backlog messages
+- Docker functional gate for `DD-286`:
+  - `Files=6, Tests=292`
+  - `Result: PASS`
+- Docker covered gate for `DD-286`:
+  - `Files=6, Tests=292`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`

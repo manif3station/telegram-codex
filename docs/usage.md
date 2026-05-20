@@ -69,7 +69,8 @@ The collector definition installed or healed by `telegram-codex.start` is:
 }
 ```
 
-Dashboard may try to schedule it every five seconds, but singleton mode plus the same-session pid guard prevents a second `check-message <session-id>` copy from starting while the existing loop is still running. If `~/.telegram-codex/<session-id>/codex.session` exists, the worker automatically resumes that Codex session to generate the Telegram reply. If `listener.inbox.jsonl` proves a newer next offset than `listener.offset`, the worker rewrites `listener.offset` before polling so restart state and replay diagnostics stay aligned.
+Dashboard may try to schedule it every five seconds, but singleton mode plus the same-session pid guard prevents a second `check-message <session-id>` copy from starting while the existing loop is still running. If `~/.telegram-codex/<session-id>/codex.session` exists, the worker automatically resumes that Codex session to generate the Telegram reply. If `listener.inbox.jsonl` proves a newer next offset than `listener.offset`, the worker rewrites `listener.offset` before polling so restart state and replay diagnostics stay aligned. While that managed reply is being generated, the worker sends Telegram `typing...` status first.
+Before that managed reply is generated, supported inbound Telegram media is downloaded into the session runtime and exposed to Codex through `*_local_path=` lines in the reply prompt.
 
 Stop it with Dashboard:
 
@@ -100,6 +101,8 @@ dashboard telegram-codex.download <FILE_ID>
 
 Use that for photos, videos, audio, voice, PDFs, and other Telegram-hosted files whenever the actual content must be inspected.
 
+The managed `check-message` loop now performs that download step automatically for inbound supported media before Codex replies.
+
 ## Send Replies
 
 Text:
@@ -114,10 +117,24 @@ Photo:
 dashboard telegram-codex.send-photo <CHAT_ID> ~/Pictures/demo.png
 ```
 
+Audio:
+
+```bash
+dashboard telegram-codex.send-audio <CHAT_ID> ~/Music/reply.mp3
+```
+
 Document:
 
 ```bash
 dashboard telegram-codex.send-document <CHAT_ID> ~/Downloads/report.pdf
+```
+
+Managed Codex replies can also send those files back automatically by returning:
+
+```text
+telegram_attachment_type=photo|audio|document
+telegram_attachment_path=/absolute/local/path
+telegram_attachment_caption=optional caption
 ```
 
 ## `/start` Acknowledgement Helper
@@ -133,12 +150,14 @@ Per-session runtime state lives under:
 - `~/.telegram-codex/<session-id>/listener.offset`
 - `~/.telegram-codex/<session-id>/listener.inbox.jsonl`
 - `~/.telegram-codex/<session-id>/codex.session`
+- `~/.telegram-codex/<session-id>/downloads/`
 
 `listener.offset` keeps the next Telegram update offset and is healed immediately from the inbox ledger when inbox recovery proves a newer next offset.
 
 `listener.inbox.jsonl` keeps the per-session inbound update ledger.
 
 `codex.session` keeps the real Codex session that the collector-owned `check-message <session-id>` worker resumes to generate Telegram replies.
+`downloads/` keeps inbound supported Telegram media that was downloaded for Codex before reply generation.
 
 ## Media Handling Rule
 

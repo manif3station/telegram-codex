@@ -46,6 +46,7 @@ sub main_updates          { return shift->_run_main( 'updates',          @_ ) }
 sub main_download         { return shift->_run_main( 'download',         @_ ) }
 sub main_reply            { return shift->_run_main( 'reply',            @_ ) }
 sub main_send_photo       { return shift->_run_main( 'send_photo',       @_ ) }
+sub main_send_audio       { return shift->_run_main( 'send_audio',       @_ ) }
 sub main_send_document    { return shift->_run_main( 'send_document',    @_ ) }
 sub main_auto_reply_start { return shift->_run_main( 'auto_reply_start', @_ ) }
 sub main_check_message    { return shift->_run_main( 'check_messages',   @_ ) }
@@ -234,6 +235,20 @@ sub execute_send_photo {
     )->{result};
 }
 
+sub execute_send_audio {
+    my ( $self, @argv ) = @_;
+    die "Usage: dashboard telegram-codex.send-audio <CHAT_ID> <AUDIO_PATH> [CAPTION]\n" if @argv < 2;
+    my $chat_id = shift @argv;
+    my $audio_path = shift @argv;
+    my $caption = join q{ }, @argv;
+    die "Audio path does not exist: $audio_path\n" if !-f $audio_path;
+    return $self->telegram_post_file(
+        'sendAudio',
+        { chat_id => $chat_id, caption => $caption },
+        { audio   => $audio_path },
+    )->{result};
+}
+
 sub execute_send_document {
     my ( $self, @argv ) = @_;
     die "Usage: dashboard telegram-codex.send-document <CHAT_ID> <DOCUMENT_PATH> [CAPTION]\n" if @argv < 2;
@@ -356,6 +371,7 @@ sub execute_check_messages {
     my $processed = 0;
     my $replied = 0;
     my @reply_errors;
+    my @typing_errors;
     my @get_errors;
 
     while (1) {
@@ -386,16 +402,36 @@ sub execute_check_messages {
             $processed++;
             my $message = $update->{message} || $update->{edited_message} || {};
             my $chat_id = $message->{chat}{id};
-            my $reply_message = $self->listener_reply_message_for_update( $summary, $reply_text );
+            my $reply_mode = $self->listener_reply_mode_for_update($reply_text);
+            $summary = $self->hydrate_summary_media_paths($summary)
+              if $reply_mode eq 'codex-session';
+            if ( defined $chat_id && $self->listener_should_send_typing( $summary, $reply_mode ) ) {
+                my $typing = eval {
+                    $self->telegram_post(
+                        'sendChatAction',
+                        {
+                            chat_id => $chat_id,
+                            action  => 'typing',
+                        }
+                    );
+                };
+                if ( my $error = $@ ) {
+                    chomp $error;
+                    push @typing_errors, {
+                        update_id  => $summary->{update_id},
+                        chat_id    => $chat_id,
+                        message_id => $message->{message_id},
+                        error      => $error,
+                    };
+                }
+            }
+            my $reply_message = $self->listener_reply_message_for_update( $summary, $reply_text, $reply_mode );
             if ( defined $reply_message && $reply_message ne q{} && defined $chat_id && $self->update_needs_listener_reply($summary) ) {
                 my $sent = eval {
-                    $self->telegram_post(
-                        'sendMessage',
-                        {
-                            chat_id             => $chat_id,
-                            text                => $reply_message,
-                            reply_to_message_id => $message->{message_id},
-                        }
+                    $self->dispatch_listener_reply(
+                        chat_id             => $chat_id,
+                        reply_to_message_id => $message->{message_id},
+                        reply_message       => $reply_message,
                     );
                 };
                 if ( my $error = $@ ) {
@@ -427,6 +463,7 @@ sub execute_check_messages {
         processed    => $processed,
         replied      => $replied,
         get_errors   => \@get_errors,
+        typing_errors => \@typing_errors,
         reply_errors => \@reply_errors,
         next_offset  => $offset,
         offset_file  => $paths->{offset_file},
@@ -987,6 +1024,70 @@ sub summarise_update {
     };
 }
 
+sub hydrate_summary_media_paths {
+    my ( $self, $summary ) = @_;
+    for my $descriptor ( $self->summary_media_descriptors($summary) ) {
+        my $download = $self->download_telegram_file_id(
+            $descriptor->{file_id},
+            File::Spec->catdir( $self->listener_paths->{runtime_dir}, 'downloads', 'update-' . $summary->{update_id} ),
+            $descriptor->{filename},
+        );
+        $summary->{ $descriptor->{field} }{local_path} = $download->{saved_to};
+        $summary->{ $descriptor->{field} }{telegram_file_path} = $download->{telegram_file_path};
+    }
+    return $summary;
+}
+
+sub summary_media_descriptors {
+    my ( $self, $summary ) = @_;
+    my @descriptors;
+    push @descriptors, {
+        field    => 'photo',
+        file_id  => $summary->{photo}{file_id},
+        filename => 'photo-' . $summary->{update_id} . '.jpg',
+    } if $summary->{photo} && $summary->{photo}{file_id};
+    push @descriptors, {
+        field    => 'document',
+        file_id  => $summary->{document}{file_id},
+        filename => $self->safe_filename( $summary->{document}{file_name} || 'document-' . $summary->{update_id} . '.bin' ),
+    } if $summary->{document} && $summary->{document}{file_id};
+    push @descriptors, {
+        field    => 'audio',
+        file_id  => $summary->{audio}{file_id},
+        filename => $self->safe_filename( $summary->{audio}{title} || 'audio-' . $summary->{update_id} ) . '.bin',
+    } if $summary->{audio} && $summary->{audio}{file_id};
+    push @descriptors, {
+        field    => 'video',
+        file_id  => $summary->{video}{file_id},
+        filename => 'video-' . $summary->{update_id} . '.bin',
+    } if $summary->{video} && $summary->{video}{file_id};
+    push @descriptors, {
+        field    => 'voice',
+        file_id  => $summary->{voice}{file_id},
+        filename => 'voice-' . $summary->{update_id} . '.bin',
+    } if $summary->{voice} && $summary->{voice}{file_id};
+    return @descriptors;
+}
+
+sub download_telegram_file_id {
+    my ( $self, $file_id, $target_dir, $filename ) = @_;
+    my $file = $self->telegram_get( 'getFile', { file_id => $file_id } )->{result};
+    my $bytes = $self->telegram_download( $file->{file_path} );
+    make_path($target_dir) if !-d $target_dir;
+    my $name = $filename || $self->basename( $file->{file_path} );
+    my $path = File::Spec->catfile( $target_dir, $name );
+    open my $fh, '>', $path or die "Unable to write $path: $!";
+    binmode $fh;
+    print {$fh} $bytes;
+    close $fh or die "Unable to close $path: $!";
+    return {
+        file_id            => $file_id,
+        telegram_file_path => $file->{file_path},
+        saved_to           => $path,
+        bytes              => length $bytes,
+    };
+}
+
 sub telegram_get {
     my ( $self, $method, $params ) = @_;
     if ( $self->{get_runner} ) {
@@ -1034,6 +1135,65 @@ sub telegram_post_file {
     my $payload = decode_json( $response->decoded_content );
     die "Telegram POST failed for $method: " . encode_json($payload) . "\n" if !$payload->{ok};
     return $payload;
+}
+
+sub dispatch_listener_reply {
+    my ( $self, %args ) = @_;
+    my $chat_id = $args{chat_id};
+    my $reply_to_message_id = $args{reply_to_message_id};
+    my $reply_message = $args{reply_message};
+    my $directive = $self->parse_telegram_reply_directive($reply_message);
+    if ( $directive->{kind} eq 'attachment' ) {
+        my %params = (
+            chat_id => $chat_id,
+            ( defined $directive->{caption} && $directive->{caption} ne q{} ? ( caption => $directive->{caption} ) : () ),
+            ( defined $reply_to_message_id ? ( reply_to_message_id => $reply_to_message_id ) : () ),
+        );
+        return $self->telegram_post_file( 'sendPhoto', \%params, { photo => $directive->{path} } )
+          if $directive->{type} eq 'photo';
+        return $self->telegram_post_file( 'sendAudio', \%params, { audio => $directive->{path} } )
+          if $directive->{type} eq 'audio';
+        return $self->telegram_post_file( 'sendDocument', \%params, { document => $directive->{path} } );
+    }
+    return $self->telegram_post(
+        'sendMessage',
+        {
+            chat_id             => $chat_id,
+            text                => $directive->{text},
+            reply_to_message_id => $reply_to_message_id,
+        }
+    );
+}
+
+sub parse_telegram_reply_directive {
+    my ( $self, $reply ) = @_;
+    my @lines = split /\n/, ( defined $reply ? $reply : q{} );
+    my %directive;
+    my @body;
+    for my $line (@lines) {
+        if ( $line =~ /\Atelegram_attachment_type=(photo|audio|document)\z/ ) {
+            $directive{type} = $1;
+            next;
+        }
+        if ( $line =~ /\Atelegram_attachment_path=(.+)\z/ ) {
+            $directive{path} = $1;
+            next;
+        }
+        if ( $line =~ /\Atelegram_attachment_caption=(.*)\z/ ) {
+            $directive{caption} = $1;
+            next;
+        }
+        push @body, $line;
+    }
+    if ( defined $directive{type} && defined $directive{path} ) {
+        $directive{kind} = 'attachment';
+        $directive{caption} = join "\n", @body if !defined $directive{caption} && @body;
+        return \%directive;
+    }
+    return {
+        kind => 'text',
+        text => $reply,
+    };
 }
 
 sub telegram_download {
@@ -1132,14 +1292,28 @@ sub inbox_contains_update_id {
     return 0;
 }
 
-sub listener_reply_message_for_update {
-    my ( $self, $summary, $reply_text ) = @_;
+sub listener_reply_mode_for_update {
+    my ( $self, $reply_text ) = @_;
     my $mode = $self->env_value('TELEGRAM_CODEX_LISTENER_MODE');
     if ( ( !defined $mode || $mode eq q{} ) && ( !defined $reply_text || $reply_text eq q{} ) ) {
         $mode = 'codex-session'
           if defined $self->read_codex_target_session_id( $self->listener_paths->{target_session_file} );
     }
     $mode ||= 'static';
+    return $mode;
+}
+
+sub listener_should_send_typing {
+    my ( $self, $summary, $mode ) = @_;
+    return 0 if !defined $mode || $mode ne 'codex-session';
+    return 0 if !defined $summary->{chat} || !defined $summary->{chat}{id};
+    return 0 if !$self->update_needs_listener_reply($summary);
+    return 1;
+}
+
+sub listener_reply_message_for_update {
+    my ( $self, $summary, $reply_text, $mode ) = @_;
+    $mode = $self->listener_reply_mode_for_update($reply_text) if !defined $mode || $mode eq q{};
     if ( $mode eq 'codex-session' ) {
         return $self->codex_session_reply_for_update($summary);
     }
@@ -1187,12 +1361,19 @@ sub codex_session_reply_prompt {
     my $chat_id = defined $summary->{chat} ? $summary->{chat}{id} : q{};
     my $message_id = defined $summary->{message_id} ? $summary->{message_id} : q{};
     return join "\n",
-      'A Telegram user sent a message to this active Codex session.',
-      'Reply as this Codex session, using the current conversation context.',
-      'Return only the exact Telegram reply text. No markdown fences. No explanations. No tool narration.',
-      "chat_id=$chat_id",
-      "message_id=$message_id",
-      "text=$text",
+        'A Telegram user sent a message to this active Codex session.',
+        'Reply as this Codex session, using the current conversation context.',
+        'Return only the exact Telegram reply text. No markdown fences. No explanations. No tool narration.',
+        'Any *_local_path values below are already downloaded locally for this active Codex session.',
+        'Inspect those local files directly when needed before replying.',
+        'Do not claim the attachment was not downloaded when a *_local_path value is present.',
+        'For an outbound file reply, return directive lines instead of plain prose:',
+        'telegram_attachment_type=photo|audio|document',
+        'telegram_attachment_path=/absolute/local/path',
+        'telegram_attachment_caption=optional caption',
+        "chat_id=$chat_id",
+        "message_id=$message_id",
+        "text=$text",
       "caption=$caption",
       $self->telegram_media_prompt_lines($summary);
 }
@@ -1202,26 +1383,31 @@ sub telegram_media_prompt_lines {
     my @lines;
     if ( $summary->{photo} ) {
         push @lines, 'photo_file_id=' . ( $summary->{photo}{file_id} || q{} );
+        push @lines, 'photo_local_path=' . ( $summary->{photo}{local_path} || q{} ) if $summary->{photo}{local_path};
     }
     if ( $summary->{document} ) {
         push @lines, 'document_file_id=' . ( $summary->{document}{file_id} || q{} );
         push @lines, 'document_name=' . ( $summary->{document}{file_name} || q{} );
         push @lines, 'document_mime=' . ( $summary->{document}{mime_type} || q{} );
+        push @lines, 'document_local_path=' . ( $summary->{document}{local_path} || q{} ) if $summary->{document}{local_path};
     }
     if ( $summary->{audio} ) {
         push @lines, 'audio_file_id=' . ( $summary->{audio}{file_id} || q{} );
         push @lines, 'audio_title=' . ( $summary->{audio}{title} || q{} );
         push @lines, 'audio_mime=' . ( $summary->{audio}{mime_type} || q{} );
+        push @lines, 'audio_local_path=' . ( $summary->{audio}{local_path} || q{} ) if $summary->{audio}{local_path};
     }
     if ( $summary->{video} ) {
         push @lines, 'video_file_id=' . ( $summary->{video}{file_id} || q{} );
         push @lines, 'video_mime=' . ( $summary->{video}{mime_type} || q{} );
         push @lines, 'video_duration=' . ( $summary->{video}{duration} || q{} );
+        push @lines, 'video_local_path=' . ( $summary->{video}{local_path} || q{} ) if $summary->{video}{local_path};
     }
     if ( $summary->{voice} ) {
         push @lines, 'voice_file_id=' . ( $summary->{voice}{file_id} || q{} );
         push @lines, 'voice_mime=' . ( $summary->{voice}{mime_type} || q{} );
         push @lines, 'voice_duration=' . ( $summary->{voice}{duration} || q{} );
+        push @lines, 'voice_local_path=' . ( $summary->{voice}{local_path} || q{} ) if $summary->{voice}{local_path};
     }
     return @lines;
 }
@@ -1305,6 +1491,15 @@ sub basename {
     return $parts[-1];
 }
 
+sub safe_filename {
+    my ( $self, $name ) = @_;
+    $name = defined $name ? $name : 'file.bin';
+    $name =~ s{[^\w.\-]+}{-}g;
+    $name =~ s{\A-+}{};
+    $name =~ s{-+\z}{};
+    return $name eq q{} ? 'file.bin' : $name;
+}
+
 sub encode_pretty_json {
     my ( $self, $data ) = @_;
     return JSON::XS->new->utf8->pretty->canonical->encode($data);
@@ -1331,7 +1526,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.18',
+        agent   => 'telegram-codex/0.20',
         timeout => 60,
     );
     return $ua;

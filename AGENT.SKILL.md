@@ -11,6 +11,7 @@ This skill gives Codex:
 - Telegram file download by `file_id`
 - outbound text reply
 - outbound photo send
+- outbound audio send
 - outbound document send
 - managed two-way Telegram communication through one DD collector per active workspace session
 
@@ -64,7 +65,7 @@ The collector shape is:
 }
 ```
 
-`dashboard telegram-codex.check-message <session-id>` is a long-running polling loop. Dashboard may try to start it every five seconds, but singleton mode plus the same-session pid guard prevents overlap while the active loop is still running. When `codex.session` exists for that session, the worker replies through that persisted Codex session automatically. If `listener.inbox.jsonl` proves a newer next offset than `listener.offset`, the worker rewrites `listener.offset` before polling so restart state stays accurate.
+`dashboard telegram-codex.check-message <session-id>` is a long-running polling loop. Dashboard may try to start it every five seconds, but singleton mode plus the same-session pid guard prevents overlap while the active loop is still running. When `codex.session` exists for that session, the worker replies through that persisted Codex session automatically. If `listener.inbox.jsonl` proves a newer next offset than `listener.offset`, the worker rewrites `listener.offset` before polling so restart state stays accurate. While a managed Codex reply is being generated, the worker sends Telegram `typing...` status first. Supported inbound media is downloaded into the session runtime before Codex replies, and Codex can return attachment directives to send photos, audio, or documents back to Telegram.
 
 ## What The Skill Can Receive
 
@@ -81,6 +82,12 @@ The polling loop records those inbound updates in:
 
 ```bash
 ~/.telegram-codex/<session-id>/listener.inbox.jsonl
+```
+
+Downloaded inbound media for managed replies is stored under:
+
+```bash
+~/.telegram-codex/<session-id>/downloads/
 ```
 
 ## What The Skill Can Read Versus Download
@@ -118,13 +125,19 @@ Photo:
 dashboard telegram-codex.send-photo <CHAT_ID> ~/Pictures/demo.png
 ```
 
+Audio:
+
+```bash
+dashboard telegram-codex.send-audio <CHAT_ID> ~/Music/reply.mp3
+```
+
 Document:
 
 ```bash
 dashboard telegram-codex.send-document <CHAT_ID> ~/Downloads/report.pdf
 ```
 
-This skill does not currently expose dedicated `send-audio` or `send-video` commands.
+This skill does not currently expose dedicated outbound video sending.
 
 ## Key Commands
 
@@ -158,11 +171,19 @@ Download file:
 dashboard telegram-codex.download <FILE_ID>
 ```
 
+Managed attachment reply directive:
+
+```text
+telegram_attachment_type=photo|audio|document
+telegram_attachment_path=/absolute/local/path
+telegram_attachment_caption=optional caption
+```
+
 ## Important Rules For Another Codex Session
 
 - Use `dashboard telegram-codex.start` when Telegram is meant to be the primary communication channel.
 - Treat `dashboard telegram-codex.check-message <session-id>` as a collector-owned long-running loop, not as a short one-shot helper.
 - Expect one DD collector per workspace session.
 - Expect per-session state under `~/.telegram-codex/<session-id>/`.
-- Do not claim outbound audio/video sending support.
+- Do not claim outbound video sending support.
 - Do not claim binary attachment content was inspected unless it was downloaded first.

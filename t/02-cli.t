@@ -155,6 +155,23 @@ sub capture_run {
 }
 
 {
+    my ( $rc, $stdout, $stderr ) = capture_run(
+        sub {
+            my ( $out_fh, $err_fh ) = @_;
+            my $manager = Telegram::Codex::Manager->new(
+                stdout_fh => $out_fh,
+                stderr_fh => $err_fh,
+                env       => { TELEGRAM_BOT_TOKEN => 'token-xyz' },
+            );
+            return $manager->main_send_audio( 77, '/definitely/missing.mp3' );
+        }
+    );
+    is( $rc, 2, 'main_send_audio fails for missing file' );
+    is( $stdout, q{}, 'main_send_audio missing file keeps stdout empty' );
+    like( $stderr, qr/Audio path does not exist/, 'main_send_audio explains missing audio' );
+}
+
+{
     my $tmpfile = '/tmp/telegram-codex-cli-document.txt';
     open my $fh, '>', $tmpfile or die $!;
     print {$fh} 'doc';
@@ -186,6 +203,40 @@ sub capture_run {
     is( $rc, 0, 'main_send_document succeeds' );
     is( $stderr, q{}, 'main_send_document leaves stderr empty' );
     is( decode_json($stdout)->{caption}, 'hello doc', 'main_send_document prints document result JSON' );
+}
+
+{
+    my $tmpfile = '/tmp/telegram-codex-cli-audio.mp3';
+    open my $fh, '>', $tmpfile or die $!;
+    print {$fh} 'audio';
+    close $fh or die $!;
+    my ( $rc, $stdout, $stderr ) = capture_run(
+        sub {
+            my ( $out_fh, $err_fh ) = @_;
+            my $manager = Telegram::Codex::Manager->new(
+                stdout_fh   => $out_fh,
+                stderr_fh   => $err_fh,
+                env         => { TELEGRAM_BOT_TOKEN => 'token-xyz' },
+                post_runner => sub {
+                    my ( $method, $params, $files ) = @_;
+                    return {
+                        ok     => JSON::XS::true,
+                        result => {
+                            message_id => 46,
+                            chat       => { id => $params->{chat_id} },
+                            caption    => $params->{caption},
+                            file       => $files->{audio},
+                        },
+                    };
+                },
+            );
+            return $manager->main_send_audio( 77, $tmpfile, 'hello', 'audio' );
+        }
+    );
+    unlink $tmpfile or die $!;
+    is( $rc, 0, 'main_send_audio succeeds' );
+    is( $stderr, q{}, 'main_send_audio leaves stderr empty' );
+    is( decode_json($stdout)->{caption}, 'hello audio', 'main_send_audio prints audio result JSON' );
 }
 
 {

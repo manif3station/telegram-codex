@@ -14,6 +14,7 @@ my @cli_files = qw(
   cli/download
   cli/reply
   cli/send-photo
+  cli/send-audio
   cli/send-document
   cli/auto-reply-start
 );

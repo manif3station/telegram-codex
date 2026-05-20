@@ -62,12 +62,14 @@ Outbound Telegram actions:
 
 - text replies
 - local photo sends
+- local audio sends
 - local document sends
 
 Attachment handling:
 
 - metadata is available directly in updates and collector processing
-- actual binary content still requires `dashboard telegram-codex.download <FILE_ID>`
+- managed `dashboard telegram-codex.check-message <session-id>` now downloads inbound supported media into the session runtime before Codex replies
+- the Codex prompt receives `*_local_path=` lines for those downloaded files
 
 ## Commands
 
@@ -119,6 +121,12 @@ Send a photo:
 dashboard telegram-codex.send-photo <CHAT_ID> ~/Pictures/demo.png
 ```
 
+Send audio:
+
+```bash
+dashboard telegram-codex.send-audio <CHAT_ID> ~/Music/reply.mp3
+```
+
 Send a document:
 
 ```bash
@@ -147,6 +155,14 @@ The collector record created or healed by `dashboard telegram-codex.start` looks
 ```
 
 `dashboard telegram-codex.check-message <session-id>` is a long-running polling loop. Dashboard attempts to schedule it every five seconds, but singleton mode plus the same-session pid guard prevents overlap while the existing loop is still alive. When `~/.telegram-codex/<session-id>/codex.session` exists, the worker resumes that Codex session to generate the Telegram reply text. If `listener.offset` is missing or stale but `listener.inbox.jsonl` proves a newer next offset, the worker rewrites `listener.offset` to that recovered value before polling so restart state stays truthful.
+While Codex is generating a managed reply, the worker also sends Telegram `typing...` status so the user can see the message is being processed.
+For inbound non-text updates, the worker downloads supported attachments into `~/.telegram-codex/<session-id>/downloads/` before asking Codex to reply. Codex can send a non-text reply back by returning directive lines:
+
+```text
+telegram_attachment_type=photo|audio|document
+telegram_attachment_path=/absolute/local/path
+telegram_attachment_caption=optional caption
+```
 
 Stop it with Dashboard collector lifecycle commands, for example:
 
@@ -161,13 +177,15 @@ The skill keeps per-session Telegram state under:
 - `~/.telegram-codex/<session-id>/listener.offset`
 - `~/.telegram-codex/<session-id>/listener.inbox.jsonl`
 - `~/.telegram-codex/<session-id>/codex.session`
+- `~/.telegram-codex/<session-id>/downloads/`
 
 `codex.session` stores the actual Codex session that Telegram replies should resume. That target may be different from the collector session name when `TICKET_REF` maps the workspace to a saved Codex session.
 `listener.offset` is healed from `listener.inbox.jsonl` immediately when inbox-ledger recovery proves a newer next offset.
+`downloads/` stores inbound media that the managed collector downloaded for Codex inspection before reply generation.
 
 ## Important Rules
 
 - Do not claim binary media content was read unless the file was downloaded first.
-- Do not claim outbound audio or video send support; only text, photo, and document sending are implemented.
+- Do not claim outbound video send support; text, photo, audio, and document sending are implemented.
 - Do use `dashboard telegram-codex.start` for the real always-on path.
 - Do treat `dashboard telegram-codex.check-message <session-id>` as a managed collector loop, not as a short one-off polling command.

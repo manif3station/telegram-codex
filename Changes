@@ -1,3 +1,23 @@
+0.20 2026-05-20
+    - made the managed collector-owned `check-message` worker download inbound
+      photo, document, audio, video, and voice files into the session runtime
+      before asking Codex to reply
+    - exposed the downloaded `*_local_path` values in the Codex reply prompt
+      and explicitly told Codex those files are already available locally for
+      inspection
+    - added outbound managed attachment directives so Codex replies can send
+      photos, audio, and documents back to Telegram instead of only plain text
+    - added the public `dashboard telegram-codex.send-audio` command and
+      Docker-verified coverage for the expanded media workflow
+
+0.19 2026-05-20
+    - made the collector-owned managed Telegram reply path send
+      `sendChatAction` with `typing` before Codex generates the final reply
+    - kept typing-status failures non-fatal so Telegram reply generation and
+      delivery still continue
+    - added Docker-verified regressions for typing-action ordering and
+      non-blocking typing-action failures
+
 0.18 2026-05-20
     - made the collector-owned `dashboard telegram-codex.check-message
       <session-id>` worker persist any recovered inbox-ledger next offset

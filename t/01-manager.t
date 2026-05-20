@@ -202,15 +202,20 @@ sub new_manager {
     is( $reply->{text}, 'hello there', 'reply joins trailing text arguments' );
     my $tmpdir = tempdir( CLEANUP => 1 );
     my $photo = File::Spec->catfile( $tmpdir, 'photo.png' );
+    my $audio = File::Spec->catfile( $tmpdir, 'sound.mp3' );
     my $doc = File::Spec->catfile( $tmpdir, 'note.txt' );
     _write( $photo, 'png' );
+    _write( $audio, 'mp3' );
     _write( $doc, 'doc' );
     $manager->execute_send_photo( 55, $photo, 'look', 'here' );
+    $manager->execute_send_audio( 55, $audio, 'listen', 'here' );
     $manager->execute_send_document( 55, $doc, 'read', 'this' );
     is( $calls[1][0], 'sendPhoto', 'send-photo uses sendPhoto' );
     is( $calls[1][2]{photo}, $photo, 'send-photo forwards file path to multipart helper' );
-    is( $calls[2][0], 'sendDocument', 'send-document uses sendDocument' );
-    is( $calls[2][2]{document}, $doc, 'send-document forwards file path to multipart helper' );
+    is( $calls[2][0], 'sendAudio', 'send-audio uses sendAudio' );
+    is( $calls[2][2]{audio}, $audio, 'send-audio forwards file path to multipart helper' );
+    is( $calls[3][0], 'sendDocument', 'send-document uses sendDocument' );
+    is( $calls[3][2]{document}, $doc, 'send-document forwards file path to multipart helper' );
 }
 
 {
@@ -1086,7 +1091,9 @@ sub new_manager {
     is( scalar @resume_calls, 1, 'managed listener mode resumes the active Codex session to generate the Telegram reply text' );
     is( $resume_calls[0][0], 'session-managed-listen', 'managed listener mode targets the active Codex session id' );
     like( $resume_calls[0][1], qr/text=hello2/, 'managed listener mode passes the inbound Telegram text into the Codex reply prompt' );
-    is( $post_calls[0][1]{text}, 'This is a real Codex session reply.', 'managed listener mode sends the Codex-generated reply instead of a placeholder' );
+    is( $post_calls[0][0], 'sendChatAction', 'managed listener mode sends a typing action before the Codex-generated reply' );
+    is( $post_calls[0][1]{action}, 'typing', 'managed listener mode uses Telegram typing status while the Codex reply is being generated' );
+    is( $post_calls[1][1]{text}, 'This is a real Codex session reply.', 'managed listener mode sends the Codex-generated reply instead of a placeholder' );
 }
 
 {
@@ -1137,7 +1144,161 @@ sub new_manager {
     is( scalar @resume_calls, 1, 'collector-owned check-message resumes Codex exactly once' );
     is( $resume_calls[0][0], 'session-from-ledger', 'collector-owned check-message uses the persisted codex.session target for replies' );
     like( $resume_calls[0][1], qr/text=Hi/, 'collector-owned check-message passes the inbound text into the Codex reply prompt' );
-    is( $post_calls[0][1]{text}, 'Collector reply from Codex session.', 'collector-owned check-message sends the Codex-generated reply text' );
+    is( $post_calls[0][0], 'sendChatAction', 'collector-owned check-message sends a typing action before the reply in managed Codex-session mode' );
+    is( $post_calls[0][1]{action}, 'typing', 'collector-owned check-message uses Telegram typing status while Codex is generating the reply' );
+    is( $post_calls[1][0], 'sendMessage', 'collector-owned check-message sends the final Telegram reply after the typing action' );
+    is( $post_calls[1][1]{text}, 'Collector reply from Codex session.', 'collector-owned check-message sends the Codex-generated reply text' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my @resume_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 102,
+                        message   => {
+                            message_id => 20,
+                            text       => 'Typing failure should not block reply',
+                            chat       => { id => 99, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        codex_resume_runner => sub {
+            my ( $session_id, $prompt, $summary ) = @_;
+            push @resume_calls, [ $session_id, $prompt, $summary ];
+            return 'Reply still sent after typing failure.';
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            die "Telegram POST failed for sendChatAction: 429 Too Many Requests\n" if $method eq 'sendChatAction';
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 778, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    $manager->write_codex_target_session_id( 'skills', 'session-from-ledger' );
+    my $result = $manager->execute_check_messages( 'skills', 1, 0 );
+    is( $result->{processed}, 1, 'collector-owned check-message still processes the inbound message when typing status fails' );
+    is( $result->{replied}, 1, 'collector-owned check-message still sends the final reply when typing status fails' );
+    is( scalar @resume_calls, 1, 'collector-owned check-message still resumes Codex when typing status fails' );
+    is( $post_calls[0][0], 'sendChatAction', 'collector-owned check-message attempted the typing action before the reply' );
+    is( $post_calls[1][0], 'sendMessage', 'collector-owned check-message still sends the reply after a typing-action failure' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @resume_calls;
+    my @post_calls;
+    my @download_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        get_runner => sub {
+            my ( $method, $params ) = @_;
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 103,
+                        message   => {
+                            message_id => 21,
+                            caption    => 'What is in this picture?',
+                            chat       => { id => 99, type => 'private' },
+                            photo      => [ { file_id => 'small-1' }, { file_id => 'big-photo-1' } ],
+                        },
+                    },
+                ],
+            } if $method eq 'getUpdates';
+            return {
+                ok     => JSON::XS::true,
+                result => { file_path => 'photos/image-1.jpg' },
+            } if $method eq 'getFile';
+            die "unexpected method $method";
+        },
+        download_runner => sub {
+            my ($url) = @_;
+            push @download_calls, $url;
+            return 'JPEGDATA';
+        },
+        codex_resume_runner => sub {
+            my ( $session_id, $prompt, $summary ) = @_;
+            push @resume_calls, [ $session_id, $prompt, $summary ];
+            return 'Photo processed from local file.';
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 779, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    $manager->write_codex_target_session_id( 'skills', 'session-from-ledger' );
+    my $result = $manager->execute_check_messages( 'skills', 1, 0 );
+    is( $result->{processed}, 1, 'collector-owned check-message processes inbound photo messages' );
+    is( scalar @download_calls, 1, 'collector-owned check-message downloads inbound managed media before asking Codex to reply' );
+    like( $resume_calls[0][1], qr/photo_local_path=.*update-103.*photo-103\.jpg/, 'collector-owned check-message passes the downloaded photo local path into the Codex reply prompt' );
+    like( $resume_calls[0][1], qr/already downloaded locally for this active Codex session/i, 'collector-owned check-message tells Codex the downloaded media is locally available' );
+    is( $post_calls[1][1]{text}, 'Photo processed from local file.', 'collector-owned check-message still sends the Codex-generated text reply after downloading photo media' );
+}
+
+{
+    my $tmpdir = tempdir( CLEANUP => 1 );
+    my $photo = File::Spec->catfile( $tmpdir, 'reply.png' );
+    my $audio = File::Spec->catfile( $tmpdir, 'reply.mp3' );
+    my $doc = File::Spec->catfile( $tmpdir, 'reply.pdf' );
+    _write( $photo, 'png' );
+    _write( $audio, 'mp3' );
+    _write( $doc, 'pdf' );
+    my @calls;
+    my $manager = new_manager(
+        post_runner => sub {
+            my ( $method, $params, $files ) = @_;
+            push @calls, [ $method, $params, $files ];
+            return { ok => JSON::XS::true, result => { message_id => 800 + scalar @calls } };
+        },
+    );
+    $manager->dispatch_listener_reply(
+        chat_id             => 55,
+        reply_to_message_id => 12,
+        reply_message       => "telegram_attachment_type=photo\ntelegram_attachment_path=$photo\ntelegram_attachment_caption=look",
+    );
+    $manager->dispatch_listener_reply(
+        chat_id             => 55,
+        reply_to_message_id => 13,
+        reply_message       => "telegram_attachment_type=audio\ntelegram_attachment_path=$audio\ntelegram_attachment_caption=listen",
+    );
+    $manager->dispatch_listener_reply(
+        chat_id             => 55,
+        reply_to_message_id => 14,
+        reply_message       => "telegram_attachment_type=document\ntelegram_attachment_path=$doc\ntelegram_attachment_caption=read",
+    );
+    is( $calls[0][0], 'sendPhoto', 'dispatch_listener_reply routes photo attachment directives to sendPhoto' );
+    is( $calls[0][2]{photo}, $photo, 'dispatch_listener_reply forwards the local photo path' );
+    is( $calls[1][0], 'sendAudio', 'dispatch_listener_reply routes audio attachment directives to sendAudio' );
+    is( $calls[1][2]{audio}, $audio, 'dispatch_listener_reply forwards the local audio path' );
+    is( $calls[2][0], 'sendDocument', 'dispatch_listener_reply routes generic attachment directives to sendDocument' );
+    is( $calls[2][2]{document}, $doc, 'dispatch_listener_reply forwards the local document path' );
 }
 
 {
@@ -1148,19 +1309,39 @@ sub new_manager {
             text       => q{},
             caption    => 'media caption',
             chat       => { id => 77 },
-            photo      => { file_id => 'photo-1' },
-            document   => { file_id => 'doc-1', file_name => 'report.pdf', mime_type => 'application/pdf' },
-            audio      => { file_id => 'aud-1', title => 'Track', mime_type => 'audio/mpeg' },
-            video      => { file_id => 'vid-1', mime_type => 'video/mp4', duration => 9 },
-            voice      => { file_id => 'voc-1', mime_type => 'audio/ogg', duration => 4 },
+            photo      => { file_id => 'photo-1', local_path => '/tmp/photo-1.jpg' },
+            document   => { file_id => 'doc-1', file_name => 'report.pdf', mime_type => 'application/pdf', local_path => '/tmp/report.pdf' },
+            audio      => { file_id => 'aud-1', title => 'Track', mime_type => 'audio/mpeg', local_path => '/tmp/track.bin' },
+            video      => { file_id => 'vid-1', mime_type => 'video/mp4', duration => 9, local_path => '/tmp/video.bin' },
+            voice      => { file_id => 'voc-1', mime_type => 'audio/ogg', duration => 4, local_path => '/tmp/voice.bin' },
         }
     );
+    like( $prompt, qr/already downloaded locally for this active Codex session/i, 'codex_session_reply_prompt tells Codex that local media paths are already downloaded' );
+    like( $prompt, qr/Do not claim the attachment was not downloaded/i, 'codex_session_reply_prompt blocks the old metadata-only excuse when local paths exist' );
     like( $prompt, qr/photo_file_id=photo-1/, 'codex_session_reply_prompt includes inbound photo metadata for Telegram media handling' );
+    like( $prompt, qr/photo_local_path=\/tmp\/photo-1\.jpg/, 'codex_session_reply_prompt includes inbound photo local path metadata' );
     like( $prompt, qr/document_file_id=doc-1/, 'codex_session_reply_prompt includes inbound document metadata' );
     like( $prompt, qr/document_name=report\.pdf/, 'codex_session_reply_prompt includes inbound document filename metadata' );
+    like( $prompt, qr/document_local_path=\/tmp\/report\.pdf/, 'codex_session_reply_prompt includes inbound document local path metadata' );
     like( $prompt, qr/audio_file_id=aud-1/, 'codex_session_reply_prompt includes inbound audio metadata' );
+    like( $prompt, qr/audio_local_path=\/tmp\/track\.bin/, 'codex_session_reply_prompt includes inbound audio local path metadata' );
     like( $prompt, qr/video_file_id=vid-1/, 'codex_session_reply_prompt includes inbound video metadata' );
+    like( $prompt, qr/video_local_path=\/tmp\/video\.bin/, 'codex_session_reply_prompt includes inbound video local path metadata' );
     like( $prompt, qr/voice_file_id=voc-1/, 'codex_session_reply_prompt includes inbound voice metadata' );
+    like( $prompt, qr/voice_local_path=\/tmp\/voice\.bin/, 'codex_session_reply_prompt includes inbound voice local path metadata' );
+}
+
+{
+    my $manager = new_manager;
+    my @descriptors = $manager->summary_media_descriptors(
+        {
+            update_id => 500,
+            document  => { file_id => 'doc-x', file_name => 'Quarterly Report (Final).pdf' },
+            audio     => { file_id => 'aud-x', title => 'Track 01 / Intro' },
+        }
+    );
+    is( $descriptors[0]{filename}, 'Quarterly-Report-Final-.pdf', 'summary_media_descriptors sanitizes inbound document filenames through safe_filename' );
+    is( $descriptors[1]{filename}, 'Track-01-Intro.bin', 'summary_media_descriptors sanitizes inbound audio titles through safe_filename' );
 }
 
 {
