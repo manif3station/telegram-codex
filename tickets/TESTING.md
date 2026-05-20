@@ -61,6 +61,16 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 - Zero-cycle sentinel regression:
   - `telegram-codex.listen 0 ...` is now covered as the run-forever sentinel path instead of a one-cycle cap
   - managed `telegram-codex.start` relies on that same sentinel because it launches `telegram-codex.listen 0 30`
+- Docker functional gate for `DD-282`:
+  - `Files=6, Tests=236`
+  - `Result: PASS`
+- Docker covered gate for `DD-282`:
+  - `Files=6, Tests=236`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Direct managed listener launch regression:
+  - managed startup now launches the skill-owned `cli/listen` command directly instead of going back through a nested `dashboard telegram-codex.listen` process
+  - this keeps `listener.pid` aligned with the real resident listener process
 - Docker listener gate:
   - `Files=6, Tests=181`
   - listener state, session-specific runtime paths, inbox ledger, wrapper executability, thin-launcher generation, preserved saved-session resume mapping, no-backlog first auto-start behavior, `.env` discovery paths, and audio/video/voice reply eligibility are covered

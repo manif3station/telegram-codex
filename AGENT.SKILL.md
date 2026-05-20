@@ -166,6 +166,7 @@ The real startup logic in `telegram-codex.start`:
 
 - preserves the original saved-session resume mapping from `TICKET_REF` and `~/.developer-dashboard/config/codex.json`
 - starts the listener automatically before Codex launches
+- launches the skill-owned `cli/listen` process directly so the listener pid file tracks the real resident listener
 - keeps one listener per session id
 - persists wrapper-managed pid and log files under `~/.telegram-codex/<session-id>/`
 - primes to the latest Telegram update on the first auto-start when no stored offset exists, so old backlog messages are not auto-replied

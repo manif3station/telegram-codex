@@ -515,16 +515,17 @@ sub new_manager {
 
 {
     my $home = tempdir( CLEANUP => 1 );
-    my $bin_dir = File::Spec->catdir( $home, 'bin' );
-    make_path($bin_dir);
-    my $dashboard_log = File::Spec->catfile( $home, 'dashboard.exec.log' );
-    my $dashboard = File::Spec->catfile( $bin_dir, 'dashboard' );
-    _write( $dashboard, "#!/bin/sh\nprintf '%s\\n' \"\$TELEGRAM_CODEX_LISTENER_MODE\" \"\$TELEGRAM_CODEX_TARGET_SESSION_ID\" \"\$@\" > \"$dashboard_log\"\nexit 0\n" );
-    chmod 0755, $dashboard or die "Unable to chmod fake dashboard: $!";
-    local $ENV{PATH} = $bin_dir;
+    my $skill_root = File::Spec->catdir( $home, 'skill-root' );
+    my $cli_dir = File::Spec->catdir( $skill_root, 'cli' );
+    make_path($cli_dir);
+    my $listener_log = File::Spec->catfile( $home, 'listener.exec.log' );
+    my $listen = File::Spec->catfile( $cli_dir, 'listen' );
+    _write( $listen, "#!/bin/sh\nprintf '%s\\n' \"\$TELEGRAM_CODEX_LISTENER_MODE\" \"\$TELEGRAM_CODEX_TARGET_SESSION_ID\" \"\$0\" \"\$@\" > \"$listener_log\"\nexit 0\n" );
+    chmod 0755, $listen or die "Unable to chmod fake listener: $!";
     my $manager = new_manager(
         cwd  => $home,
         home => $home,
+        skill_root => $skill_root,
         env  => {
             TELEGRAM_CODEX_RUNTIME_DIR => $home,
         },
@@ -536,11 +537,11 @@ sub new_manager {
     );
     waitpid $paths->{pid}, 0 if $paths->{pid};
     my $exec_log = do {
-        open my $fh, '<', $dashboard_log or die $!;
+        open my $fh, '<', $listener_log or die $!;
         local $/;
         <$fh>;
     };
-    is( $exec_log, "codex-session\nsession-forked-22\ntelegram-codex.listen\n0\n30\n", 'start_listener_if_needed can fork and exec an isolated fake dashboard listener command with managed session-response env' );
+    is( $exec_log, "codex-session\nsession-forked-22\n$listen\n0\n30\n", 'start_listener_if_needed can fork and exec the skill-owned listener command directly with managed session-response env' );
 }
 
 {

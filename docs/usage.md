@@ -49,6 +49,7 @@ dashboard telegram-codex.start
 
 On the first auto-start with no stored listener offset, it primes to the latest Telegram update and waits for new messages instead of replying to older backlog items.
 After that first prime step, managed startup routes each new inbound Telegram text message through the active Codex session by resuming that session and asking Codex to generate the Telegram reply text within the live session context.
+Managed startup now launches the skill-owned `cli/listen` directly, so `listener.pid` follows the real resident listener process instead of an intermediate wrapper process.
 
 It also preserves the original saved-session resume logic from `~/.developer-dashboard/config/codex.json` when `TICKET_REF` points to a stored Codex session id.
 

@@ -613,6 +613,7 @@ sub codex_start_plan {
 sub start_listener_if_needed {
     my ( $self, $session_id, %options ) = @_;
     my $paths = $self->listener_paths_for_session($session_id);
+    my $listener_command = $self->listener_command_path;
     make_path( $paths->{runtime_dir} ) if !-d $paths->{runtime_dir};
     if ( -f $paths->{pid_file} ) {
         my $existing_pid = $self->read_text_file( $paths->{pid_file} );
@@ -649,7 +650,7 @@ sub start_listener_if_needed {
         $ENV{TELEGRAM_CODEX_LISTENER_PRIME_LATEST} = 1;
         $ENV{TELEGRAM_CODEX_LISTENER_MODE} = $options{mode} if defined $options{mode} && $options{mode} ne q{};
         $ENV{TELEGRAM_CODEX_TARGET_SESSION_ID} = $options{codex_session_id} if defined $options{codex_session_id} && $options{codex_session_id} ne q{};
-        my @command = ( 'dashboard', 'telegram-codex.listen', 0, 30 );
+        my @command = ( $listener_command, 0, 30 );
         push @command, $options{reply_text} if defined $options{reply_text} && $options{reply_text} ne q{};
         my $exit = system(@command);
         exit( $exit == -1 ? 1 : ( $exit >> 8 ) );
@@ -662,6 +663,11 @@ sub start_listener_if_needed {
         pid                => $pid,
         %{$paths},
     };
+}
+
+sub listener_command_path {
+    my ($self) = @_;
+    return File::Spec->catfile( $self->{skill_root}, 'cli', 'listen' );
 }
 
 sub plugin_script_python {
@@ -1099,7 +1105,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.12',
+        agent   => 'telegram-codex/0.13',
         timeout => 60,
     );
     return $ua;
