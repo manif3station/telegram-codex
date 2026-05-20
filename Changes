@@ -1,0 +1,12 @@
+0.01 2026-05-20
+    - added the first packaged `telegram-codex` skill with install, get-me,
+      updates, download, reply, send-photo, send-document, and `/start`
+      auto-reply commands for a local Codex Telegram MCP bridge
+    - added a generated stdio MCP plugin scaffold for Codex local plugin
+      roots and local marketplace registration
+    - added Docker-verified tests and 100% coverage proof for scaffold,
+      Telegram API request shaping, CLI behavior, and release metadata
+    - fixed the shipped CLI wrapper modes so the skill checkout entrypoints
+      are executable and covered by regression tests
+    - proved the live bot flow with install, get-me, updates, `/start`
+      auto-reply, and direct reply evidence
