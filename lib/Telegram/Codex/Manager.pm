@@ -288,6 +288,7 @@ sub execute_listen {
     my $poll_timeout = 30;
     if ( @argv && $argv[0] =~ /\A\d+\z/ ) {
         $max_cycles = shift @argv;
+        $max_cycles = undef if defined $max_cycles && $max_cycles == 0;
     }
     if ( @argv && $argv[0] =~ /\A\d+\z/ ) {
         $poll_timeout = shift @argv;
@@ -1098,7 +1099,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.11',
+        agent   => 'telegram-codex/0.12',
         timeout => 60,
     );
     return $ua;

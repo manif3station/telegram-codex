@@ -139,6 +139,7 @@ dashboard telegram-codex.start
 - persists the next Telegram update offset
 - writes inbound update summaries to `~/.telegram-codex/<session-id>/listener.inbox.jsonl`
 - keeps offset state in `~/.telegram-codex/<session-id>/listener.offset`
+- treats `dashboard telegram-codex.listen 0 ...` as the run-forever sentinel path
 - resolves the session id in this order:
   - `TELEGRAM_CODEX_SESSION_ID`
   - `CODEX_SESSION_ID`

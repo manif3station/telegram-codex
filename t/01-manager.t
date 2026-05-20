@@ -1042,6 +1042,34 @@ EOF
 
 {
     my $runtime = tempdir( CLEANUP => 1 );
+    my $polls = 0;
+    my $slept = 0;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'session-zero-means-forever',
+        },
+        get_runner => sub {
+            $polls++;
+            die "forced listener stop\n" if $polls > 1;
+            return { ok => JSON::XS::true, result => [] };
+        },
+        sleep_runner => sub {
+            $slept++;
+            die "listener paused after retry\n";
+        },
+    );
+    my $error = eval { $manager->execute_listen( 0, 0 ); 1 } ? q{} : $@;
+    like( $error, qr/listener paused after retry/, 'listen treats MAX_CYCLES=0 as run forever instead of exiting after the first cycle' );
+    is( $polls, 2, 'listen performs another poll cycle before external stop when MAX_CYCLES=0 is passed' );
+    is( $slept, 1, 'listen reaches the retry pause path instead of terminating immediately when MAX_CYCLES=0 is passed' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
     my $session_dir = File::Spec->catdir( $runtime, 'session-resume' );
     mkdir $session_dir;
     _write( File::Spec->catfile( $session_dir, 'listener.offset' ), "50\n" );

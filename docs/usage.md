@@ -133,6 +133,7 @@ dashboard telegram-codex.listen
 That command long-polls Telegram, appends inbound message summaries to `~/.telegram-codex/<session-id>/listener.inbox.jsonl`, and persists the next Telegram offset in `~/.telegram-codex/<session-id>/listener.offset`.
 If `listener.offset` is missing but the inbox ledger exists, the listener recovers the next offset from the latest inbox entry and skips any returned update older than that recovered offset.
 If the stored offset is older than the inbox-ledger offset, the listener now advances to the newer inbox-ledger offset instead of replaying duplicated older Telegram updates.
+Passing `0` as `MAX_CYCLES` means "stay running forever" instead of "stop after one cycle."
 By default it does not send a Telegram reply. It only captures inbound activity unless you pass an explicit reply text.
 Managed startup uses a different mode than direct `listen`: it resumes the active Codex session to generate Telegram replies instead of relying on a static reply string.
 
@@ -164,6 +165,12 @@ For an explicit acknowledgement reply:
 
 ```bash
 ./cli/listen 1 0 'Message received'
+```
+
+For an explicit acknowledgement reply that should keep running:
+
+```bash
+./cli/listen 0 30 'Message received'
 ```
 
 For a background listener from the skill checkout:

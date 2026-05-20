@@ -42,6 +42,7 @@ The installed plugin exposes a stdio MCP server with tools for:
 
 The skill itself also exposes an always-on listener command that keeps a per-Codex-session Telegram inbox ledger and persistent update offset.
 If the offset file is missing, the listener now recovers the next offset from the inbox ledger and skips stale returned updates older than that offset so old Telegram messages are not re-acknowledged again.
+Passing `0` as the listener cycle count now explicitly means "stay running forever" for the managed startup path and direct listener use.
 The listener is passive by default and does not send a placeholder bot reply unless you pass an explicit reply text on the command line.
 `telegram-codex.start` is the managed two-way path and launches the listener in active Codex-session reply mode instead of placeholder reply mode.
 
@@ -185,6 +186,8 @@ Run the listener with an explicit acknowledgement reply only when you really wan
 ```bash
 dashboard telegram-codex.listen 0 30 'Message received'
 ```
+
+In that form, the leading `0` means "do not stop after a bounded number of cycles."
 
 Launch Codex with automatic Telegram listener startup:
 

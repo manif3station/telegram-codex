@@ -1,3 +1,10 @@
+0.12 2026-05-20
+    - fixed `telegram-codex.listen 0 ...` so `0` once again means
+      "stay running forever" instead of exiting after the first poll cycle
+    - kept managed `telegram-codex.start` aligned with that run-forever
+      listener behavior because it launches `telegram-codex.listen 0 30`
+    - added Docker-verified TDD coverage for the zero-cycle sentinel path
+
 0.11 2026-05-20
     - routed managed `telegram-codex.start` listener replies through the
       active Codex session by resuming that session and asking Codex to
