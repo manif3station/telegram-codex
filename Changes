@@ -1,3 +1,13 @@
+0.03 2026-05-20
+    - partitioned listener runtime state by Codex session id under
+      `~/.telegram-codex/<session-id>/` so each Codex session keeps its own
+      offset file and inbox ledger
+    - added session-id precedence for `TELEGRAM_CODEX_SESSION_ID` over
+      `CODEX_SESSION_ID`, with a safe `default` fallback when no session id
+      is available
+    - updated the listener docs, agent handoff guide, and Docker-verified
+      regressions to prove session-specific state paths and listener output
+
 0.02 2026-05-20
     - added `dashboard telegram-codex.listen` and `./cli/listen` for a
       long-poll always-on listener with persistent update offset state and

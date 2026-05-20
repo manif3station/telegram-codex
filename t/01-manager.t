@@ -206,6 +206,39 @@ sub new_manager {
 
 {
     my $runtime = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'session-abc',
+        },
+    );
+    my $paths = $manager->listener_paths;
+    is( $paths->{runtime_dir}, File::Spec->catdir( $runtime, 'session-abc' ), 'listener_paths partitions runtime state by CODEX_SESSION_ID' );
+    is( $paths->{offset_file}, File::Spec->catfile( $runtime, 'session-abc', 'listener.offset' ), 'listener_paths stores offset under the session directory' );
+    is( $paths->{inbox_file}, File::Spec->catfile( $runtime, 'session-abc', 'listener.inbox.jsonl' ), 'listener_paths stores inbox ledger under the session directory' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN           => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR   => $runtime,
+            TELEGRAM_CODEX_SESSION_ID    => 'session-explicit',
+            CODEX_SESSION_ID             => 'session-ignored',
+        },
+    );
+    my $paths = $manager->listener_paths;
+    is( $paths->{runtime_dir}, File::Spec->catdir( $runtime, 'session-explicit' ), 'listener_paths prefers TELEGRAM_CODEX_SESSION_ID when both session variables exist' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
     my @get_calls;
     my @post_calls;
     my $manager = new_manager(
@@ -214,6 +247,7 @@ sub new_manager {
         env  => {
             TELEGRAM_BOT_TOKEN         => 'token-xyz',
             TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'session-listen',
         },
         get_runner => sub {
             my ( $method, $params ) = @_;
@@ -261,17 +295,21 @@ sub new_manager {
     is( scalar @post_calls, 2, 'listen sends a reply per eligible inbound message' );
     is( $post_calls[0][1]{reply_to_message_id}, 10, 'listen replies to original text message id' );
     is( $post_calls[1][1]{reply_to_message_id}, 11, 'listen replies to original document message id' );
-    my $offset_file = File::Spec->catfile( $runtime, 'listener.offset' );
-    my $inbox_file  = File::Spec->catfile( $runtime, 'listener.inbox.jsonl' );
+    my $offset_file = File::Spec->catfile( $runtime, 'session-listen', 'listener.offset' );
+    my $inbox_file  = File::Spec->catfile( $runtime, 'session-listen', 'listener.inbox.jsonl' );
     is( $manager->read_text_file($offset_file), "32\n", 'listen persists next offset to runtime state' );
     my @entries = split /\n/, $manager->read_text_file($inbox_file);
     is( scalar @entries, 2, 'listen appends inbound messages to inbox ledger' );
     is( decode_json( $entries[1] )->{document}{file_name}, 'report.pdf', 'listen logs document metadata in inbox ledger' );
+    is( $result->{offset_file}, $offset_file, 'listen reports the session-specific offset path' );
+    is( $result->{inbox_file}, $inbox_file, 'listen reports the session-specific inbox path' );
 }
 
 {
     my $runtime = tempdir( CLEANUP => 1 );
-    _write( File::Spec->catfile( $runtime, 'listener.offset' ), "50\n" );
+    my $session_dir = File::Spec->catdir( $runtime, 'session-resume' );
+    mkdir $session_dir;
+    _write( File::Spec->catfile( $session_dir, 'listener.offset' ), "50\n" );
     my @get_calls;
     my $manager = new_manager(
         cwd  => $runtime,
@@ -279,6 +317,7 @@ sub new_manager {
         env  => {
             TELEGRAM_BOT_TOKEN         => 'token-xyz',
             TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'session-resume',
         },
         get_runner => sub {
             my ( $method, $params ) = @_;
@@ -303,6 +342,7 @@ sub new_manager {
         env  => {
             TELEGRAM_BOT_TOKEN         => 'token-xyz',
             TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'session-no-reply',
         },
         get_runner => sub {
             return {
@@ -337,6 +377,7 @@ sub new_manager {
         env  => {
             TELEGRAM_BOT_TOKEN         => 'token-xyz',
             TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'session-media',
         },
         get_runner => sub {
             return {

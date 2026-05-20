@@ -94,7 +94,13 @@ dashboard telegram-codex.auto-reply-start
 dashboard telegram-codex.listen
 ```
 
-That command long-polls Telegram, appends inbound message summaries to `~/.telegram-codex/listener.inbox.jsonl`, and persists the next Telegram offset in `~/.telegram-codex/listener.offset`.
+That command long-polls Telegram, appends inbound message summaries to `~/.telegram-codex/<session-id>/listener.inbox.jsonl`, and persists the next Telegram offset in `~/.telegram-codex/<session-id>/listener.offset`.
+
+Session id resolution order is:
+
+1. `TELEGRAM_CODEX_SESSION_ID`
+2. `CODEX_SESSION_ID`
+3. `default`
 
 The listener sends an immediate text acknowledgement for inbound:
 

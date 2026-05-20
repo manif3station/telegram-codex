@@ -221,6 +221,7 @@ sub capture_run {
                 env       => {
                     TELEGRAM_BOT_TOKEN         => 'token-xyz',
                     TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+                    CODEX_SESSION_ID           => 'cli-listen',
                 },
                 get_runner => sub {
                     return {
@@ -243,8 +244,9 @@ sub capture_run {
                 },
             );
             my $rc = $manager->main_listen( 1, 0, 'listener online' );
-            unlink "$runtime/listener.offset" if -f "$runtime/listener.offset";
-            unlink "$runtime/listener.inbox.jsonl" if -f "$runtime/listener.inbox.jsonl";
+            unlink "$runtime/cli-listen/listener.offset" if -f "$runtime/cli-listen/listener.offset";
+            unlink "$runtime/cli-listen/listener.inbox.jsonl" if -f "$runtime/cli-listen/listener.inbox.jsonl";
+            rmdir "$runtime/cli-listen" if -d "$runtime/cli-listen";
             rmdir $runtime;
             return $rc;
         }
@@ -252,6 +254,7 @@ sub capture_run {
     is( $rc, 0, 'main_listen succeeds' );
     is( $stderr, q{}, 'main_listen leaves stderr empty' );
     is( decode_json($stdout)->{replied}, 1, 'main_listen prints listener result JSON' );
+    like( decode_json($stdout)->{offset_file}, qr{/cli-listen/listener\.offset\z}, 'main_listen reports a session-specific offset path' );
 }
 
 done_testing;

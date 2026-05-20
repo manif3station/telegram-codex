@@ -884,12 +884,24 @@ sub telegram_file_base {
 
 sub listener_paths {
     my ($self) = @_;
-    my $runtime_dir = $self->resolve_path( $self->env_value('TELEGRAM_CODEX_RUNTIME_DIR') || '~/.telegram-codex' );
+    my $runtime_root = $self->resolve_path( $self->env_value('TELEGRAM_CODEX_RUNTIME_DIR') || '~/.telegram-codex' );
+    my $runtime_dir = File::Spec->catdir( $runtime_root, $self->listener_session_id );
     return {
         runtime_dir => $runtime_dir,
         offset_file => File::Spec->catfile( $runtime_dir, 'listener.offset' ),
         inbox_file  => File::Spec->catfile( $runtime_dir, 'listener.inbox.jsonl' ),
     };
+}
+
+sub listener_session_id {
+    my ($self) = @_;
+    my $session_id = $self->env_value('TELEGRAM_CODEX_SESSION_ID');
+    $session_id = $self->env_value('CODEX_SESSION_ID') if !defined $session_id || $session_id eq q{};
+    $session_id = 'default' if !defined $session_id || $session_id eq q{};
+    $session_id =~ s{[^A-Za-z0-9_.-]+}{-}g;
+    $session_id =~ s{\A-+}{};
+    $session_id =~ s{-+\z}{};
+    return $session_id eq q{} ? 'default' : $session_id;
 }
 
 sub read_listener_offset {
@@ -986,7 +998,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.02',
+        agent   => 'telegram-codex/0.03',
         timeout => 60,
     );
     return $ua;

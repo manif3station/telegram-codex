@@ -7,10 +7,16 @@
 
 The skill is aimed at a personal local Codex runtime where plugin files live under `~/.codex/.tmp/plugins/` and, when present, a mirrored runtime under `~/_codex/michael/.tmp/plugins/`.
 
-For the listener path, the skill keeps runtime state under `~/.telegram-codex/` by default:
+For the listener path, the skill keeps runtime state under `~/.telegram-codex/<session-id>/` by default:
 
 - `listener.offset`
 - `listener.inbox.jsonl`
+
+Session id resolution order is:
+
+1. `TELEGRAM_CODEX_SESSION_ID`
+2. `CODEX_SESSION_ID`
+3. `default`
 
 Inbound update support covers:
 

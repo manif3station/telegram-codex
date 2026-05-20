@@ -31,7 +31,7 @@ The installed plugin exposes a stdio MCP server with tools for:
 - auto-replying to `/start`
 - receiving text, photos, video, audio, voice, and documents through update metadata
 
-The skill itself also exposes an always-on listener command that keeps a local Telegram inbox ledger and persistent update offset.
+The skill itself also exposes an always-on listener command that keeps a per-Codex-session Telegram inbox ledger and persistent update offset.
 
 ## Developer Dashboard Feature Added
 
@@ -147,6 +147,17 @@ Run the always-on long-poll listener in the foreground:
 dashboard telegram-codex.listen
 ```
 
+By default the listener keeps runtime state under:
+
+- `~/.telegram-codex/<codex-session-id>/listener.offset`
+- `~/.telegram-codex/<codex-session-id>/listener.inbox.jsonl`
+
+Session id resolution order is:
+
+1. `TELEGRAM_CODEX_SESSION_ID`
+2. `CODEX_SESSION_ID`
+3. `default`
+
 Run it continuously in the background from the skill checkout:
 
 ```bash
@@ -177,7 +188,7 @@ Use `dashboard telegram-codex.reply`, `send-photo`, or `send-document` when you 
 ```
 
 ```text
-Use `dashboard telegram-codex.listen` when you want immediate bot acknowledgements without manually polling `updates` from an active Codex session.
+Use `dashboard telegram-codex.listen` when you want immediate bot acknowledgements without manually polling `updates` from an active Codex session, while keeping that session's Telegram history separate from other Codex sessions.
 ```
 
 ```text
@@ -203,7 +214,7 @@ If `/start` has already been consumed from the Telegram update queue, `dashboard
 ```
 
 ```text
-If you restart `dashboard telegram-codex.listen`, it resumes from the stored listener offset instead of reprocessing old Telegram updates.
+If you restart `dashboard telegram-codex.listen` inside the same Codex session id, it resumes from that session's stored listener offset instead of reprocessing old Telegram updates.
 ```
 
 ## Agent Handoff

@@ -124,8 +124,12 @@ dashboard telegram-codex.listen
 
 - long-polls Telegram continuously
 - persists the next Telegram update offset
-- writes inbound update summaries to `~/.telegram-codex/listener.inbox.jsonl`
-- keeps offset state in `~/.telegram-codex/listener.offset`
+- writes inbound update summaries to `~/.telegram-codex/<session-id>/listener.inbox.jsonl`
+- keeps offset state in `~/.telegram-codex/<session-id>/listener.offset`
+- resolves the session id in this order:
+  - `TELEGRAM_CODEX_SESSION_ID`
+  - `CODEX_SESSION_ID`
+  - `default`
 - sends an immediate text acknowledgement for inbound:
   - text
   - photos
@@ -161,4 +165,5 @@ nohup ./cli/listen >/tmp/telegram-codex-listener.log 2>&1 &
 - Do not claim binary media content has been inspected unless the file was downloaded first.
 - Do not claim audio or video sending support; only text, photo, and document sending are implemented.
 - Do use the listener when immediate replies are required.
+- Do use a stable `CODEX_SESSION_ID` or `TELEGRAM_CODEX_SESSION_ID` when you want a later Codex session to resume the same Telegram conversation history cleanly.
 - Do stop the listener if automatic replies become noisy or unwanted.
