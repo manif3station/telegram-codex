@@ -30,10 +30,9 @@ That command:
 1. keeps the saved-session mapping logic from `TICKET_REF` and `~/.developer-dashboard/config/codex.json`
 2. derives a collector session id from:
    - `TELEGRAM_CODEX_SESSION_ID`
-   - `CODEX_SESSION_ID`
    - otherwise the workspace directory name
 3. ensures there is exactly one collector named `telegram-codex-<session-id>` in `~/.developer-dashboard/config/config.json`
-4. removes duplicates for that collector name
+4. removes duplicates for that collector name and heals stale same-workspace `telegram-codex-*` entries that still point at the wrong session id
 5. writes the actual Codex resume target into:
 
 ```bash
@@ -49,7 +48,7 @@ dashboard restart collector telegram-codex-<session-id>
 7. launches the real Codex binary
 
 `dashboard telegram-codex.start --version` is a safe metadata query for DD probe/discovery paths, must not create or restart collectors, and proxies the real underlying Codex CLI version output the DD launcher expects.
-Successful managed startup now hands off with `exec`, so the wrapper process should not remain as an extra long-lived `cli/start` parent once Codex or Ollama is running.
+Successful managed startup now hands off with `exec`, so the wrapper process should not remain as an extra long-lived `cli/start` parent once Codex is running. Ambient workspace `OLLAMA_MODEL` is intentionally ignored here; use `TELEGRAM_CODEX_OLLAMA_MODEL` only when Telegram-managed startup should explicitly inject the Ollama launch profile.
 
 When `~/.telegram-codex/<session-id>/codex.session` exists, the collector-owned `dashboard telegram-codex.check-message <session-id>` worker automatically resumes that Codex session to generate the Telegram reply text.
 If that file is missing, the managed reply path falls back to the saved-session mapping in `~/.developer-dashboard/config/codex.json`.
@@ -191,6 +190,7 @@ telegram_attachment_caption=optional caption
 - Treat `dashboard telegram-codex.check-message <session-id>` as a collector-owned long-running loop, not as a short one-shot helper.
 - Expect one DD collector per workspace session.
 - Expect per-session state under `~/.telegram-codex/<session-id>/`.
+- Expect nested managed `codex` calls in the same process tree to skip collector restarts because startup carries a reentry guard.
 - Do not claim outbound video sending support.
 - Do not claim binary attachment content was inspected unless it was downloaded first.
 - Do expect task-style Telegram replies to answer directly without boilerplate prefaces and to do the actual in-session work before sending the final reply.

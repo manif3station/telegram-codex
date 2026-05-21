@@ -32,9 +32,9 @@ the managed startup chain is:
 When `dashboard telegram-codex.start` runs with `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CODEX_ENABLE_AUTOSTART=1`, it:
 
 1. preserves the saved-session resume logic from `TICKET_REF` and `~/.developer-dashboard/config/codex.json`
-2. derives one workspace session id for Telegram collector ownership
+2. derives one workspace session id for Telegram collector ownership from the workspace directory name unless `TELEGRAM_CODEX_SESSION_ID` was explicitly set
 3. ensures there is exactly one collector named `telegram-codex-<session-id>` in `~/.developer-dashboard/config/config.json`
-4. removes duplicate collector entries for that session if they exist
+4. removes duplicate collector entries for that session if they exist and also removes stale same-workspace `telegram-codex-*` collectors that still point at the wrong session id
 5. writes the active Codex reply target into `~/.telegram-codex/<session-id>/codex.session`
 6. restarts the DD collector with:
    - `cwd` fixed to the workspace where `dashboard telegram-codex.start` was run
@@ -45,7 +45,7 @@ When `dashboard telegram-codex.start` runs with `TELEGRAM_BOT_TOKEN` and `TELEGR
 7. launches the real Codex binary
 
 `dashboard telegram-codex.start --version` is a pure metadata query that proxies the real underlying Codex CLI version output DD expects. DD can probe it safely without creating or restarting collectors.
-Successful managed startup now hands off with `exec`, so the wrapper process does not stay resident as an extra long-lived `cli/start` parent after Codex or Ollama takes over.
+Successful managed startup now hands off with `exec`, so the wrapper process does not stay resident as an extra long-lived `cli/start` parent after Codex takes over. Ambient workspace `OLLAMA_MODEL` is no longer treated as an automatic provider override for Telegram-managed startup. If Telegram-owned startup really needs the Ollama launch profile, set `TELEGRAM_CODEX_OLLAMA_MODEL` explicitly.
 
 The collector-owned polling loop is now the always-on path. The old standalone listener command is no longer the primary runtime model.
 When `codex.session` exists for that collector session, `dashboard telegram-codex.check-message <session-id>` automatically routes replies back through that saved Codex session.
@@ -196,3 +196,4 @@ The skill keeps per-session Telegram state under:
 - Do use `dashboard telegram-codex.start` for the real always-on path.
 - Do treat `dashboard telegram-codex.check-message <session-id>` as a managed collector loop, not as a short one-off polling command.
 - Do expect managed Telegram task replies to answer directly without boilerplate prefaces and to do the real in-session work before replying instead of sending a promise such as `will be done`.
+- Do expect repeated nested `codex` calls inside one managed process tree to skip collector restarts because startup now carries a reentry guard.

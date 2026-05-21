@@ -1,0 +1,5 @@
+- `dashboard telegram-codex.start` now ignores ambient workspace `OLLAMA_MODEL`, so Telegram-managed startup no longer recurses through `ollama launch codex` just because the workspace exports an Ollama model
+- explicit Telegram-owned Ollama startup now injects `--profile ollama-launch -m ...` directly into the real Codex exec path instead of re-entering the wrapped `codex` command
+- saved-session resume mapping is no longer prepended again when incoming Codex argv already carries a real `resume <session>` target
+- nested managed `codex` invocations inherit a startup reentry guard, so they do not keep re-running collector restart side effects
+- startup healing now removes stale same-workspace `telegram-codex-*` collector entries that still point at the wrong session id

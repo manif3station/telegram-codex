@@ -371,6 +371,25 @@ sub new_manager {
 
 {
     my $home = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => File::Spec->catdir( $home, 'mt5-ai' ),
+        home => $home,
+        env  => {
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_ENABLE_AUTOSTART => '1',
+            TELEGRAM_CODEX_START_CAPTURE    => 1,
+            CODEX_REAL_BIN                  => '/opt/codex/bin/codex-real',
+            CODEX_SESSION_ID                => 'skills',
+        },
+    );
+    my $plan = $manager->execute_start;
+    is( $plan->{workspace_session_id}, 'mt5-ai', 'execute_start derives the workspace session id from the current workspace name' );
+    is( $plan->{collector_session_id}, 'mt5-ai', 'execute_start ignores ambient CODEX_SESSION_ID for collector ownership' );
+    is( $plan->{codex_session_id}, 'mt5-ai', 'execute_start keeps the default Codex target aligned to the workspace session when there is no saved mapping' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
     my @commands;
     my $manager = new_manager(
         cwd  => $home,
@@ -477,6 +496,41 @@ sub new_manager {
     my $config_root = File::Spec->catdir( $home, '.developer-dashboard', 'config' );
     make_path($config_root);
     _write(
+        File::Spec->catfile( $config_root, 'codex.json' ),
+        encode_json(
+            {
+                mt5         => 'session-saved-88',
+                _last_action => 'Add mt5',
+                _last_update => '2026-05-21 19:00:00',
+            }
+        ),
+    );
+    my $workspace = File::Spec->catdir( $home, 'mt5-ai' );
+    make_path($workspace);
+    my $manager = new_manager(
+        cwd  => $workspace,
+        home => $home,
+        env  => {
+            TICKET_REF                      => 'mt5',
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_ENABLE_AUTOSTART => '1',
+            TELEGRAM_CODEX_START_CAPTURE    => 1,
+            CODEX_REAL_BIN                  => '/opt/codex/bin/codex-real',
+        },
+    );
+    my $plan = $manager->execute_start( '--profile', 'ollama-launch', '-m', 'qwen3.5:397b-cloud', 'resume', 'session-saved-88' );
+    is_deeply(
+        $plan->{codex_args},
+        [ '--profile', 'ollama-launch', '-m', 'qwen3.5:397b-cloud', 'resume', 'session-saved-88' ],
+        'execute_start does not prepend another resume target when the incoming codex argv already carries one',
+    );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $config_root = File::Spec->catdir( $home, '.developer-dashboard', 'config' );
+    make_path($config_root);
+    _write(
         File::Spec->catfile( $config_root, 'config.json' ),
         encode_json(
             {
@@ -546,6 +600,66 @@ sub new_manager {
     my $saved = decode_json( $manager->read_text_file( File::Spec->catfile( $config_root, 'config.json' ) ) );
     is( $saved->{collectors}[0]{cwd}, $workspace, 'ensure_collector_config rewrites collector cwd when the existing entry points at a different workspace' );
     is( $saved->{collectors}[0]{command}, 'dashboard telegram-codex.check-message cwd-demo', 'ensure_collector_config rewrites the legacy plural collector command to the session-suffixed check-message form' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $config_root = File::Spec->catdir( $home, '.developer-dashboard', 'config' );
+    make_path($config_root);
+    my $workspace = File::Spec->catdir( $home, 'mt5-ai' );
+    make_path($workspace);
+    _write(
+        File::Spec->catfile( $config_root, 'config.json' ),
+        encode_json(
+            {
+                collectors => [
+                    {
+                        name     => 'telegram-codex-skills',
+                        interval => 5,
+                        rotation => { lines => 100 },
+                        cwd      => $workspace,
+                        command  => 'dashboard telegram-codex.check-message skills',
+                        mode     => 'singleton',
+                    },
+                    {
+                        name     => 'telegram-codex-mt5-ai',
+                        interval => 5,
+                        rotation => { lines => 100 },
+                        cwd      => $workspace,
+                        command  => 'dashboard telegram-codex.check-message mt5-ai',
+                        mode     => 'singleton',
+                    },
+                ],
+            }
+        ),
+    );
+    my $manager = new_manager(
+        cwd  => $workspace,
+        home => $home,
+    );
+    my $result = $manager->ensure_collector_config( 'mt5-ai', cwd => $workspace );
+    is( $result->{removed_workspace_conflicts}, 1, 'ensure_collector_config removes stale telegram-codex collectors that still target the same workspace under the wrong session id' );
+    my $saved = decode_json( $manager->read_text_file( File::Spec->catfile( $config_root, 'config.json' ) ) );
+    my @telegram_collectors = grep { ref($_) eq 'HASH' && $_->{name} =~ /\Atelegram-codex-/ } @{ $saved->{collectors} };
+    is( scalar @telegram_collectors, 1, 'ensure_collector_config leaves only the current workspace collector after healing a stale cross-session entry' );
+    is( $telegram_collectors[0]{name}, 'telegram-codex-mt5-ai', 'ensure_collector_config keeps the governed collector for the current workspace session' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => File::Spec->catdir( $home, 'mt5-ai' ),
+        home => $home,
+        env  => {
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_ENABLE_AUTOSTART => '1',
+            TELEGRAM_CODEX_START_CAPTURE    => 1,
+            TELEGRAM_CODEX_START_ACTIVE     => 1,
+            CODEX_REAL_BIN                  => '/opt/codex/bin/codex-real',
+        },
+    );
+    my $plan = $manager->execute_start;
+    is( $plan->{start_collector}, 0, 'execute_start suppresses collector restart side effects when the managed start guard is already active in this process tree' );
 }
 
 {
@@ -953,66 +1067,78 @@ sub new_manager {
     my $home = tempdir( CLEANUP => 1 );
     my $bin_dir = File::Spec->catdir( $home, 'bin' );
     make_path($bin_dir);
-    my $args_file = File::Spec->catfile( $home, 'ollama-default.args' );
-    my $ollama = File::Spec->catfile( $bin_dir, 'ollama' );
-    _write( $ollama, "#!/bin/sh\nprintf '%s\\n' \"\$@\" > \"$args_file\"\nexit 0\n" );
-    chmod 0755, $ollama or die "Unable to chmod fake ollama: $!";
-    local $ENV{PATH} = $bin_dir;
+    my $args_file = File::Spec->catfile( $home, 'ambient-ollama-ignored.args' );
+    my $real_codex = File::Spec->catfile( $bin_dir, 'codex-real' );
+    _write( $real_codex, "#!/bin/sh\nprintf '%s\\n' \"\$@\" > \"$args_file\"\nexit 0\n" );
+    chmod 0755, $real_codex or die "Unable to chmod fake real codex: $!";
     my $pid = fork();
-    die "Unable to fork execute_start ollama default test: $!" if !defined $pid;
+    die "Unable to fork execute_start ambient ollama test: $!" if !defined $pid;
     if ( !$pid ) {
         my $manager = new_manager(
             cwd  => $home,
             home => $home,
             env  => {
                 OLLAMA_MODEL  => '2',
-                CODEX_REAL_BIN => '/opt/codex/bin/codex-real',
+                CODEX_REAL_BIN => $real_codex,
             },
         );
         $manager->execute_start('--search');
         exit 92;
     }
     waitpid $pid, 0;
-    is( $? >> 8, 0, 'execute_start supports the OLLAMA_MODEL=2 default-model branch' );
+    is( $? >> 8, 0, 'execute_start ignores ambient OLLAMA_MODEL and still execs the real codex binary' );
     my $args = do {
         open my $fh, '<', $args_file or die $!;
         local $/;
         <$fh>;
     };
-    is( $args, "launch\ncodex\n--model\nqwen3.5:397b-cloud\n", 'execute_start launches the default Ollama model for OLLAMA_MODEL=2' );
+    is( $args, "--search\n", 'execute_start does not route through Ollama just because the workspace exports OLLAMA_MODEL' );
 }
 
 {
     my $home = tempdir( CLEANUP => 1 );
     my $bin_dir = File::Spec->catdir( $home, 'bin' );
     make_path($bin_dir);
-    my $args_file = File::Spec->catfile( $home, 'ollama-custom.args' );
-    my $ollama = File::Spec->catfile( $bin_dir, 'ollama' );
-    _write( $ollama, "#!/bin/sh\nprintf '%s\\n' \"\$@\" > \"$args_file\"\nexit 0\n" );
-    chmod 0755, $ollama or die "Unable to chmod fake ollama: $!";
-    local $ENV{PATH} = $bin_dir;
+    my $args_file = File::Spec->catfile( $home, 'explicit-ollama.args' );
+    my $real_codex = File::Spec->catfile( $bin_dir, 'codex-real' );
+    _write( $real_codex, "#!/bin/sh\nprintf '%s\\n' \"\$@\" > \"$args_file\"\nexit 0\n" );
+    chmod 0755, $real_codex or die "Unable to chmod fake real codex: $!";
     my $pid = fork();
-    die "Unable to fork execute_start ollama custom test: $!" if !defined $pid;
+    die "Unable to fork execute_start explicit ollama test: $!" if !defined $pid;
     if ( !$pid ) {
         my $manager = new_manager(
             cwd  => $home,
             home => $home,
             env  => {
-                OLLAMA_MODEL  => '1',
-                CODEX_REAL_BIN => '/opt/codex/bin/codex-real',
+                TELEGRAM_CODEX_OLLAMA_MODEL => '1',
+                CODEX_REAL_BIN              => $real_codex,
             },
         );
         $manager->execute_start('resume', 'session-x');
         exit 93;
     }
     waitpid $pid, 0;
-    is( $? >> 8, 0, 'execute_start supports the OLLAMA_MODEL=1 alias branch' );
+    is( $? >> 8, 0, 'execute_start supports the explicit Telegram-owned Ollama model branch' );
     my $args = do {
         open my $fh, '<', $args_file or die $!;
         local $/;
         <$fh>;
     };
-    is( $args, "launch\ncodex\n--model\nqwen3.5:397b-cloud\n--\nresume\nsession-x\n", 'execute_start expands OLLAMA_MODEL=1 to the default model and preserves codex args' );
+    is( $args, "--profile\nollama-launch\n-m\nqwen3.5:397b-cloud\nresume\nsession-x\n", 'execute_start injects the explicit Ollama Codex profile args directly into the real Codex exec path' );
+}
+
+{
+    my $manager = new_manager(
+        env => {
+            TELEGRAM_CODEX_OLLAMA_MODEL => 'llama3.3:70b',
+        },
+    );
+    is( $manager->explicit_start_ollama_model, 'llama3.3:70b', 'explicit_start_ollama_model preserves an explicitly requested Telegram-owned Ollama model name' );
+    is_deeply(
+        [ $manager->inject_ollama_codex_args( 'llama3.3:70b', '--profile', 'ollama-launch', '-m', 'llama3.3:70b', 'resume', 'session-x' ) ],
+        [ '--profile', 'ollama-launch', '-m', 'llama3.3:70b', 'resume', 'session-x' ],
+        'inject_ollama_codex_args does not prepend another Ollama profile when the argv already targets the Ollama launch profile',
+    );
 }
 
 {

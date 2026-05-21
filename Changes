@@ -1,3 +1,20 @@
+0.27 2026-05-21
+    - stopped `dashboard telegram-codex.start` from treating ambient
+      workspace `OLLAMA_MODEL` as an automatic provider switch, so managed
+      startup now keeps the real Codex launch path unless Telegram-owned
+      Ollama routing is explicitly requested
+    - changed the explicit Ollama branch to inject Codex `--profile
+      ollama-launch -m ...` arguments directly into the real Codex exec path
+      instead of recursively calling `ollama launch codex` through the
+      wrapped `codex` command again
+    - prevented repeated `resume <session>` prefixes when the incoming Codex
+      argv already carries a real resume target
+    - made collector startup side effects idempotent inside an already
+      running managed Codex process tree through a start-reentry guard
+    - made `telegram-codex.start` heal stale wrong-session
+      `telegram-codex-*` collector entries that still point at the current
+      workspace
+
 0.26 2026-05-21
     - changed `dashboard telegram-codex.start --version` to proxy the real
       underlying Codex CLI version output instead of the skill version so DD

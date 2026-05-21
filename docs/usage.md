@@ -33,10 +33,9 @@ With `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CODEX_ENABLE_AUTOSTART=1`, `telegram-cod
 1. loads the saved Codex-session mapping from `~/.developer-dashboard/config/codex.json` when `TICKET_REF` points to one
 2. derives a stable Telegram collector session id from:
    - `TELEGRAM_CODEX_SESSION_ID`
-   - `CODEX_SESSION_ID`
    - otherwise the workspace directory name
 3. ensures there is exactly one `telegram-codex-<session-id>` collector in `~/.developer-dashboard/config/config.json`
-4. removes duplicates for that same collector name
+4. removes duplicates for that same collector name and heals stale same-workspace `telegram-codex-*` entries that still point at the wrong session id
 5. writes the active Codex resume target to `~/.telegram-codex/<session-id>/codex.session`
 6. runs:
 
@@ -47,7 +46,8 @@ dashboard restart collector telegram-codex-<session-id>
 7. launches the real Codex binary
 
 `dashboard telegram-codex.start --version` is intentionally side-effect free and proxies the real Codex CLI version output DD launcher checks expect, so DD command-family discovery can probe it without touching collectors.
-On a real startup, the launcher now uses `exec` for Codex or Ollama handoff, so a successful run does not leave an extra resident `cli/start` wrapper process behind.
+On a real startup, the launcher now uses `exec` for real Codex handoff, so a successful run does not leave an extra resident `cli/start` wrapper process behind.
+Ambient workspace `OLLAMA_MODEL` is ignored by Telegram-managed startup. If you intentionally want Telegram-managed startup to inject the Ollama launch profile, set `TELEGRAM_CODEX_OLLAMA_MODEL` explicitly.
 
 If `codex.session` is missing later, the managed reply path falls back to the same saved-session mapping in `~/.developer-dashboard/config/codex.json` instead of blindly using the collector session id.
 
@@ -77,6 +77,7 @@ The collector definition installed or healed by `telegram-codex.start` is:
 Dashboard may try to schedule it every five seconds, but singleton mode plus the same-session pid guard prevents a second `check-message <session-id>` copy from starting while the existing loop is still running. If `~/.telegram-codex/<session-id>/codex.session` exists, the worker automatically resumes that Codex session to generate the Telegram reply. If that file is missing, the worker falls back to the saved-session mapping in `~/.developer-dashboard/config/codex.json`. If `listener.inbox.jsonl` proves a newer next offset than `listener.offset`, the worker rewrites `listener.offset` before polling so restart state and replay diagnostics stay aligned. While that managed reply is being processed, the worker keeps Telegram `typing...` status active until the final outbound Telegram send attempt completes. For longer task-style requests, it also sends a separate in-progress status message while the resumed Codex session is still working.
 Before that managed reply is generated, supported inbound Telegram media is downloaded into the session runtime and exposed to Codex through `*_local_path=` lines in the reply prompt.
 Managed task replies also tell Codex to answer directly without boilerplate prefaces and to do the actual work before replying instead of returning promise-only placeholders such as `will be done`.
+Nested managed `codex` invocations inside the same process tree inherit a startup reentry guard, so they do not keep re-running collector restart side effects.
 
 Stop it with Dashboard:
 

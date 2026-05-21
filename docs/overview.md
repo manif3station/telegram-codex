@@ -7,6 +7,8 @@
 
 The skill is aimed at a personal local Codex runtime where plugin files live under `~/.codex/.tmp/plugins/` and, when present, a mirrored runtime under `~/_codex/michael/.tmp/plugins/`.
 
+For the managed startup path, `dashboard telegram-codex.start` now keeps collector ownership tied to the workspace directory name unless `TELEGRAM_CODEX_SESSION_ID` was explicitly set. It intentionally ignores ambient workspace `CODEX_SESSION_ID` and `OLLAMA_MODEL` so nested Codex chains or unrelated workspace provider env do not create the wrong collector session or recurse through a wrapped Ollama launch path.
+
 For the listener path, the skill keeps runtime state under `~/.telegram-codex/<session-id>/` by default:
 
 - `listener.offset`
@@ -31,4 +33,5 @@ Outbound send support currently covers:
 
 - text replies
 - photos
+- audio
 - documents

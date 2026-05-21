@@ -169,18 +169,13 @@ sub execute_start {
         $ENV{TELEGRAM_CODEX_SESSION_ID} = $plan->{collector_session_id};
     }
 
-    if ( my $ollama_model = $self->env_value('OLLAMA_MODEL') ) {
-        my $default_model = 'qwen3.5:397b-cloud';
-        if ( $ollama_model eq '2' ) {
-            exec 'ollama', qw(launch codex --model), $default_model;
-            die "Unable to exec ollama: $!"; # uncoverable statement
-        }
-        $ollama_model = $default_model if $ollama_model eq '1';
-        exec 'ollama', qw(launch codex --model), $ollama_model, '--', @{ $plan->{codex_args} };
-        die "Unable to exec ollama: $!"; # uncoverable statement
+    my @codex_args = @{ $plan->{codex_args} };
+    if ( my $ollama_model = $self->explicit_start_ollama_model ) {
+        @codex_args = $self->inject_ollama_codex_args( $ollama_model, @codex_args );
     }
 
-    exec { $plan->{real_codex_bin} } $plan->{real_codex_bin}, @{ $plan->{codex_args} };
+    $ENV{TELEGRAM_CODEX_START_ACTIVE} = 1;
+    exec { $plan->{real_codex_bin} } $plan->{real_codex_bin}, @codex_args;
     die "Unable to exec $plan->{real_codex_bin}: $!"; # uncoverable statement
 }
 
@@ -670,15 +665,16 @@ sub codex_start_plan {
     my $ticket = $self->env_value('TICKET_REF');
     my @codex_args = @argv;
     my $mapped_session = $self->mapped_codex_session_from_config($config);
-    if ( defined $mapped_session && $mapped_session ne q{} ) {
+    if ( defined $mapped_session && $mapped_session ne q{} && !$self->codex_args_already_resume(@argv) ) {
         @codex_args = ( 'resume', $mapped_session, @argv );
     }
+    my $workspace_session_id = $self->workspace_session_id;
     my $collector_session_id = $self->env_value('TELEGRAM_CODEX_SESSION_ID')
-      || $self->env_value('CODEX_SESSION_ID')
-      || $self->workspace_session_id;
+      || $workspace_session_id;
     my $codex_session_id = $mapped_session
-      || $self->env_value('CODEX_SESSION_ID')
       || $collector_session_id;
+    my $start_collector = ( $self->env_value('TELEGRAM_BOT_TOKEN') && ( $self->env_value('TELEGRAM_CODEX_ENABLE_AUTOSTART') || q{} ) eq '1' ) ? 1 : 0;
+    $start_collector = 0 if $self->start_reentry_guard_active;
     return {
         mode                => 'start',
         action              => 'exec',
@@ -686,7 +682,8 @@ sub codex_start_plan {
         mapped_session      => $mapped_session,
         codex_args          => \@codex_args,
         real_codex_bin      => $self->resolve_real_codex_bin( $self->codex_launcher_paths ),
-        start_collector      => ( $self->env_value('TELEGRAM_BOT_TOKEN') && ( $self->env_value('TELEGRAM_CODEX_ENABLE_AUTOSTART') || q{} ) eq '1' ) ? 1 : 0,
+        start_collector      => $start_collector,
+        workspace_session_id => $workspace_session_id,
         collector_session_id => $collector_session_id,
         collector_name       => $self->collector_name_for_session($collector_session_id),
         collector_cwd        => $self->{cwd},
@@ -736,6 +733,7 @@ sub ensure_collector_config {
     my @kept;
     my $seen = 0;
     my $removed_duplicates = 0;
+    my $removed_workspace_conflicts = 0;
     for my $collector (@collectors) {
         if ( ref($collector) eq 'HASH' && defined $collector->{name} && $collector->{name} eq $name ) {
             if ( !$seen ) {
@@ -745,6 +743,10 @@ sub ensure_collector_config {
             else {
                 $removed_duplicates++;
             }
+            next;
+        }
+        if ( $self->collector_conflicts_with_workspace_session( $collector, $wanted ) ) {
+            $removed_workspace_conflicts++;
             next;
         }
         push @kept, $collector;
@@ -758,6 +760,7 @@ sub ensure_collector_config {
         collector          => $wanted,
         created            => $seen ? 0 : 1,
         removed_duplicates => $removed_duplicates,
+        removed_workspace_conflicts => $removed_workspace_conflicts,
     };
 }
 
@@ -793,6 +796,37 @@ sub read_json_file_or_default {
 sub workspace_session_id {
     my ($self) = @_;
     return $self->normalise_session_id( $self->basename( $self->{cwd} ) );
+}
+
+sub start_reentry_guard_active {
+    my ($self) = @_;
+    my $value = $self->env_value('TELEGRAM_CODEX_START_ACTIVE') || q{};
+    return $value =~ /\A(?:1|true|yes|on)\z/i ? 1 : 0;
+}
+
+sub codex_args_already_resume {
+    my ( $self, @argv ) = @_;
+    my @remaining = @argv;
+    while (@remaining) {
+        my $arg = shift @remaining;
+        return 1 if defined $arg && $arg eq 'resume';
+        if ( defined $arg && ( $arg eq '--profile' || $arg eq '-m' ) ) {
+            shift @remaining if @remaining;
+            next;
+        }
+    }
+    return 0;
+}
+
+sub collector_conflicts_with_workspace_session {
+    my ( $self, $collector, $wanted ) = @_;
+    return 0 if ref($collector) ne 'HASH';
+    my $name = defined $collector->{name} ? $collector->{name} : q{};
+    return 0 if $name !~ /\Atelegram-codex-/;
+    my $cwd = defined $collector->{cwd} ? $collector->{cwd} : q{};
+    return 0 if $cwd eq q{} || $cwd ne $wanted->{cwd};
+    return 0 if $name eq $wanted->{name};
+    return 1;
 }
 
 sub begin_check_message_session {
@@ -966,6 +1000,31 @@ sub real_codex_version_output {
     die "Unexpected empty version output from $real_codex_bin --version\n"
       if !defined $output || $output eq q{};
     return $output;
+}
+
+sub explicit_start_ollama_model {
+    my ($self) = @_;
+    my $ollama_model = $self->env_value('TELEGRAM_CODEX_OLLAMA_MODEL');
+    return undef if !defined $ollama_model || $ollama_model eq q{};
+    my $default_model = 'qwen3.5:397b-cloud';
+    return $default_model if $ollama_model eq '1' || $ollama_model eq '2';
+    return $ollama_model;
+}
+
+sub inject_ollama_codex_args {
+    my ( $self, $ollama_model, @argv ) = @_;
+    return @argv if !defined $ollama_model || $ollama_model eq q{};
+    return @argv if $self->argv_already_targets_ollama(@argv);
+    return ( '--profile', 'ollama-launch', '-m', $ollama_model, @argv );
+}
+
+sub argv_already_targets_ollama {
+    my ( $self, @argv ) = @_;
+    for ( my $i = 0; $i < @argv; $i++ ) {
+        next if !defined $argv[$i];
+        return 1 if $argv[$i] eq '--profile' && defined $argv[ $i + 1 ] && $argv[ $i + 1 ] eq 'ollama-launch';
+    }
+    return 0;
 }
 
 sub dashboard_codex_launcher_script {
@@ -1830,7 +1889,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.26',
+            agent   => 'telegram-codex/0.27',
         timeout => 60,
     );
     return $ua;

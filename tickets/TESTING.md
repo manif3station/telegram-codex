@@ -15,6 +15,20 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-295`:
+  - `Files=6, Tests=398`
+  - `Result: PASS`
+- Docker covered gate for `DD-295`:
+  - `Files=6, Tests=398`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Start-recursion and workspace-session regressions:
+  - `dashboard telegram-codex.start` now ignores ambient workspace `OLLAMA_MODEL`, so Telegram-managed startup does not recurse into `ollama launch codex` just because the workspace exports an Ollama model
+  - explicit Telegram-owned Ollama startup now injects `--profile ollama-launch -m ...` directly into the real Codex exec path instead of re-entering the wrapped `codex` command
+  - `telegram-codex.start` now ignores ambient `CODEX_SESSION_ID` for collector ownership and keeps the collector session aligned to the workspace directory name unless `TELEGRAM_CODEX_SESSION_ID` was explicitly set
+  - saved-session resume mapping is no longer prepended when the incoming Codex argv already carries a real `resume <session>` target
+  - nested managed `codex` calls now inherit a startup reentry guard so they do not keep re-running collector restart side effects
+  - startup healing now removes stale same-workspace `telegram-codex-*` collector entries that still point at the wrong session id
 - Docker functional gate for `DD-294`:
   - `Files=6, Tests=386`
   - `Result: PASS`
