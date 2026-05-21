@@ -46,7 +46,7 @@ dashboard restart collector telegram-codex-<session-id>
 
 7. launches the real Codex binary
 
-`dashboard telegram-codex.start --version` is intentionally side-effect free and prints only the raw semver line DD launcher checks expect, so DD command-family discovery can probe it without touching collectors.
+`dashboard telegram-codex.start --version` is intentionally side-effect free and proxies the real Codex CLI version output DD launcher checks expect, so DD command-family discovery can probe it without touching collectors.
 On a real startup, the launcher now uses `exec` for Codex or Ollama handoff, so a successful run does not leave an extra resident `cli/start` wrapper process behind.
 
 If `codex.session` is missing later, the managed reply path falls back to the same saved-session mapping in `~/.developer-dashboard/config/codex.json` instead of blindly using the collector session id.

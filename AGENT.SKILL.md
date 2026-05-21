@@ -48,7 +48,7 @@ dashboard restart collector telegram-codex-<session-id>
 
 7. launches the real Codex binary
 
-`dashboard telegram-codex.start --version` is a safe metadata query for DD probe/discovery paths, must not create or restart collectors, and prints only the raw semver line the DD launcher expects.
+`dashboard telegram-codex.start --version` is a safe metadata query for DD probe/discovery paths, must not create or restart collectors, and proxies the real underlying Codex CLI version output the DD launcher expects.
 Successful managed startup now hands off with `exec`, so the wrapper process should not remain as an extra long-lived `cli/start` parent once Codex or Ollama is running.
 
 When `~/.telegram-codex/<session-id>/codex.session` exists, the collector-owned `dashboard telegram-codex.check-message <session-id>` worker automatically resumes that Codex session to generate the Telegram reply text.

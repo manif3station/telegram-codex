@@ -58,6 +58,7 @@ sub new_manager {
         listener_start_pid    => $args{listener_start_pid},
         sleep_runner         => $args{sleep_runner},
         codex_resume_runner  => $args{codex_resume_runner},
+        codex_version_runner => $args{codex_version_runner},
         command_runner       => $args{command_runner},
         pid_check_runner     => $args{pid_check_runner},
         typing_guard_runner  => $args{typing_guard_runner},
@@ -393,6 +394,50 @@ sub new_manager {
     is( $result->{version}, '0.24', 'execute_start --version reports the skill version from env state' );
     ok( !exists $result->{collector_name}, 'execute_start --version does not build collector startup plan data' );
     is_deeply( \@commands, [], 'execute_start --version does not touch dashboard collector orchestration' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            VERSION => '0.25',
+        },
+        codex_version_runner => sub { return "codex-cli 0.132.0\n"; },
+    );
+    is( $manager->real_codex_version_output, "codex-cli 0.132.0\n", 'real_codex_version_output can proxy the underlying Codex CLI version string' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $bin = File::Spec->catfile( $home, 'codex-real-version' );
+    _write( $bin, "#!/bin/sh\nprintf 'codex-cli 0.132.0\\n'\n" );
+    chmod 0755, $bin or die "Unable to chmod fake codex version binary: $!";
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            CODEX_REAL_BIN => $bin,
+        },
+    );
+    is( $manager->real_codex_version_output, "codex-cli 0.132.0\n", 'real_codex_version_output can read the real Codex binary version output through the subprocess path' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $bin = File::Spec->catfile( $home, 'codex-real-empty-version' );
+    _write( $bin, "#!/bin/sh\nexit 0\n" );
+    chmod 0755, $bin or die "Unable to chmod fake empty codex version binary: $!";
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            CODEX_REAL_BIN => $bin,
+        },
+    );
+    my $error = eval { $manager->real_codex_version_output; 1 } ? q{} : $@;
+    like( $error, qr/Unexpected empty version output/, 'real_codex_version_output fails explicitly when the real Codex binary prints no version output' );
 }
 
 {

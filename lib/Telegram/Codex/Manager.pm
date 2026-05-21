@@ -33,6 +33,7 @@ sub new {
         listener_start_pid   => $args{listener_start_pid},
         sleep_runner         => $args{sleep_runner},
         codex_resume_runner  => $args{codex_resume_runner},
+        codex_version_runner => $args{codex_version_runner},
         command_runner       => $args{command_runner},
         pid_check_runner     => $args{pid_check_runner},
         typing_guard_runner  => $args{typing_guard_runner},
@@ -61,7 +62,7 @@ sub _run_main {
     my $self = ref($class) ? $class : $class->new;
     my $code = eval {
         if ( $mode eq 'start' && @argv && ( $argv[0] eq '--version' || $argv[0] eq '-V' || $argv[0] eq 'version' ) ) {
-            print { $self->{stdout_fh} } ( $self->env_value('VERSION') || '0.00' ) . "\n";
+            print { $self->{stdout_fh} } $self->real_codex_version_output;
             return 0;
         }
         my $method = "execute_$mode";
@@ -952,6 +953,21 @@ sub resolve_real_codex_bin {
     die "Unable to resolve the real codex binary path\n";
 }
 
+sub real_codex_version_output {
+    my ($self) = @_;
+    return $self->{codex_version_runner}->() if $self->{codex_version_runner};
+
+    my $real_codex_bin = $self->resolve_real_codex_bin( $self->codex_launcher_paths );
+    open my $fh, '-|', $real_codex_bin, '--version'
+      or die "Unable to run $real_codex_bin --version: $!";
+    local $/;
+    my $output = <$fh>;
+    close $fh or die "Unable to read $real_codex_bin --version output: $!";
+    die "Unexpected empty version output from $real_codex_bin --version\n"
+      if !defined $output || $output eq q{};
+    return $output;
+}
+
 sub dashboard_codex_launcher_script {
     my ( $self, %args ) = @_;
     return <<"EOF";
@@ -1814,7 +1830,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.25',
+        agent   => 'telegram-codex/0.26',
         timeout => 60,
     );
     return $ua;

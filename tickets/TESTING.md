@@ -15,6 +15,13 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-294`:
+  - `Files=6, Tests=386`
+  - `Result: PASS`
+- Start-version real-Codex proxy regressions:
+  - `dashboard telegram-codex.start --version` now proxies the real underlying Codex CLI version output instead of the skill version
+  - the top-level `--version` path remains side-effect free and does not create or restart collectors
+  - internal `execute_start('--version')` still returns skill-local metadata for manager callers and tests
 - Docker functional gate for `DD-293`:
   - `Files=6, Tests=385`
   - `Result: PASS`

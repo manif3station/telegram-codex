@@ -244,16 +244,17 @@ sub capture_run {
         sub {
             my ( $out_fh, $err_fh ) = @_;
             my $manager = Telegram::Codex::Manager->new(
-                stdout_fh => $out_fh,
-                stderr_fh => $err_fh,
-                env       => { VERSION => '0.24' },
+                stdout_fh            => $out_fh,
+                stderr_fh            => $err_fh,
+                env                  => { VERSION => '0.25' },
+                codex_version_runner => sub { return "codex-cli 0.132.0\n"; },
             );
             return $manager->main_start('--version');
         }
     );
     is( $rc, 0, 'main_start --version succeeds' );
     is( $stderr, q{}, 'main_start --version leaves stderr empty' );
-    is( $stdout, "0.24\n", 'main_start --version prints the raw skill version DD expects' );
+    is( $stdout, "codex-cli 0.132.0\n", 'main_start --version proxies the real codex version output DD expects' );
 }
 
 {

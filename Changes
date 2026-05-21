@@ -1,3 +1,10 @@
+0.26 2026-05-21
+    - changed `dashboard telegram-codex.start --version` to proxy the real
+      underlying Codex CLI version output instead of the skill version so DD
+      launcher validation accepts the wrapped command
+    - kept the `--version` CLI path side-effect free so repeated DD probes
+      still do not create or restart collectors
+
 0.25 2026-05-21
     - changed the top-level `dashboard telegram-codex.start --version` CLI
       output from JSON to a raw semver line so DD launcher checks can parse it
