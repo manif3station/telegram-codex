@@ -36,6 +36,7 @@ sub new {
         command_runner       => $args{command_runner},
         pid_check_runner     => $args{pid_check_runner},
         typing_guard_runner  => $args{typing_guard_runner},
+        progress_guard_runner => $args{progress_guard_runner},
         fork_runner          => $args{fork_runner},
     }, $class;
     $self->{env} = $args{env} || $self->_merged_env;
@@ -654,7 +655,7 @@ sub codex_start_plan {
     my ( $self, $config, @argv ) = @_;
     my $ticket = $self->env_value('TICKET_REF');
     my @codex_args = @argv;
-    my $mapped_session = defined $ticket && $ticket ne q{} ? $config->{$ticket} : undef;
+    my $mapped_session = $self->mapped_codex_session_from_config($config);
     if ( defined $mapped_session && $mapped_session ne q{} ) {
         @codex_args = ( 'resume', $mapped_session, @argv );
     }
@@ -1320,10 +1321,22 @@ sub listener_reply_message_for_update {
 
 sub codex_session_reply_for_update {
     my ( $self, $summary ) = @_;
-    my $session_id = $self->env_value('TELEGRAM_CODEX_TARGET_SESSION_ID')
-      || $self->read_codex_target_session_id( $self->listener_paths->{target_session_file} )
-      || $self->listener_session_id;
+    my $session_id = $self->resolve_codex_reply_session_id;
     my $prompt = $self->codex_session_reply_prompt($summary);
+    my $needs_completion = $self->telegram_message_requires_completion($summary);
+    my $reply = $self->run_codex_session_resume( $session_id, $prompt, $summary );
+    if ( $needs_completion && $self->telegram_reply_is_promise_placeholder($reply) ) {
+        $reply = $self->run_codex_session_resume(
+            $session_id,
+            $self->codex_session_retry_prompt( $summary, $reply ),
+            $summary,
+        );
+    }
+    return $reply;
+}
+
+sub run_codex_session_resume {
+    my ( $self, $session_id, $prompt, $summary ) = @_;
     if ( $self->{codex_resume_runner} ) {
         return $self->{codex_resume_runner}->( $session_id, $prompt, $summary );
     }
@@ -1352,15 +1365,25 @@ sub codex_session_reply_for_update {
     return $reply;
 }
 
+sub resolve_codex_reply_session_id {
+    my ($self) = @_;
+    return $self->env_value('TELEGRAM_CODEX_TARGET_SESSION_ID')
+      || $self->read_codex_target_session_id( $self->listener_paths->{target_session_file} )
+      || $self->mapped_codex_session_from_config
+      || $self->listener_session_id;
+}
+
 sub with_listener_typing_status {
     my ( $self, $summary, %args ) = @_;
     my $typing_errors = $args{typing_errors} || [];
     my $code = $args{code};
     my $guard;
+    my $progress_guard;
     if ( $self->listener_should_send_typing( $summary, 'codex-session' ) ) {
         my $error = $self->send_listener_typing_action($summary);
         push @{$typing_errors}, $error if $error;
         $guard = $self->start_listener_typing_guard($summary);
+        $progress_guard = $self->start_listener_progress_guard($summary);
     }
     my $wantarray = wantarray;
     my ( @results, $result );
@@ -1377,6 +1400,13 @@ sub with_listener_typing_status {
         return 1;
     };
     my $error = $@;
+    if ($progress_guard) {
+        my $cleanup_ok = eval {
+            $progress_guard->();
+            return 1;
+        };
+        die $@ if !$cleanup_ok && !$error;
+    }
     if ($guard) {
         my $cleanup_ok = eval {
             $guard->();
@@ -1454,6 +1484,96 @@ sub listener_typing_interval_seconds {
     return 3;
 }
 
+sub start_listener_progress_guard {
+    my ( $self, $summary ) = @_;
+    return undef if !$self->listener_should_stream_progress($summary);
+    return $self->{progress_guard_runner}->( $summary, $self ) if $self->{progress_guard_runner};
+    my $chat_id = $summary->{chat}{id};
+    my $reply_to_message_id = $summary->{message_id};
+    return undef if !defined $chat_id || !defined $reply_to_message_id;
+    my $sent = eval {
+        $self->telegram_post(
+            'sendMessage',
+            {
+                chat_id             => $chat_id,
+                reply_to_message_id => $reply_to_message_id,
+                text                => $self->listener_progress_text( start => 0 ),
+            }
+        );
+    };
+    return undef if !$sent || !ref($sent) || !$sent->{result}{message_id};
+    my $progress_message_id = $sent->{result}{message_id};
+    pipe( my $reader, my $writer ) or return $self->listener_noop_guard;
+    my $pid = $self->{fork_runner} ? $self->{fork_runner}->() : fork();
+    if ( !defined $pid ) {
+        close $reader;
+        close $writer;
+        return $self->listener_noop_guard;
+    }
+    if ( !$pid ) {
+        close $writer;
+        my $interval = $self->listener_progress_interval_seconds;
+        my $tick = 1;
+        while (1) {
+            my $rin = q{};
+            vec( $rin, fileno($reader), 1 ) = 1;
+            my $ready = select( my $rout = $rin, undef, undef, $interval );
+            last if $ready;
+            eval {
+                $self->telegram_post(
+                    'editMessageText',
+                    {
+                        chat_id    => $chat_id,
+                        message_id => $progress_message_id,
+                        text       => $self->listener_progress_text( continue => $tick++ ),
+                    }
+                );
+            };
+        }
+        close $reader;
+        exit 0;
+    }
+    close $reader;
+    return sub {
+        close $writer;
+        waitpid( $pid, 0 );
+        eval {
+            $self->telegram_post(
+                'deleteMessage',
+                {
+                    chat_id    => $chat_id,
+                    message_id => $progress_message_id,
+                }
+            );
+        };
+        return 1;
+    };
+}
+
+sub listener_noop_guard {
+    my ($self) = @_;
+    return sub { return 1; };
+}
+
+sub listener_should_stream_progress {
+    my ( $self, $summary ) = @_;
+    return 0 if !$self->listener_should_send_typing( $summary, 'codex-session' );
+    return $self->telegram_message_requires_completion($summary) ? 1 : 0;
+}
+
+sub listener_progress_text {
+    my ( $self, $stage, $tick ) = @_;
+    if ( defined $stage && $stage eq 'start' ) {
+        return 'Codex is working on your request in this session. I will send the final result when the work is done.';
+    }
+    return 'Codex is still working on your request...';
+}
+
+sub listener_progress_interval_seconds {
+    my ($self) = @_;
+    return 5;
+}
+
 sub codex_session_reply_prompt {
     my ( $self, $summary ) = @_;
     my $text = defined $summary->{text} ? $summary->{text} : q{};
@@ -1464,6 +1584,7 @@ sub codex_session_reply_prompt {
         'A Telegram user sent a message to this active Codex session.',
         'Reply as this Codex session, using the current conversation context.',
         'Return only the exact Telegram reply text. No markdown fences. No explanations. No tool narration.',
+        'Do not prepend greetings, acknowledgements, or status prefaces unless the user explicitly asked for them. Start with the answer or result.',
         'Any *_local_path values below are already downloaded locally for this active Codex session.',
         'Inspect those local files directly when needed before replying.',
         'Do not claim the attachment was not downloaded when a *_local_path value is present.',
@@ -1471,11 +1592,65 @@ sub codex_session_reply_prompt {
         'telegram_attachment_type=photo|audio|document',
         'telegram_attachment_path=/absolute/local/path',
         'telegram_attachment_caption=optional caption',
+        (
+            $self->telegram_message_requires_completion($summary)
+            ? (
+                'Do the actual work in this resumed Codex session before you reply.',
+                'Do not send promise-only replies such as "will be done", "working on it", or "I will do it".',
+                'Only reply after the work is complete or you hit a concrete blocker you cannot resolve in-session.',
+              )
+            : ()
+        ),
         "chat_id=$chat_id",
         "message_id=$message_id",
         "text=$text",
       "caption=$caption",
       $self->telegram_media_prompt_lines($summary);
+}
+
+sub codex_session_retry_prompt {
+    my ( $self, $summary, $prior_reply ) = @_;
+    return join "\n",
+      $self->codex_session_reply_prompt($summary),
+      'The prior reply was only a promise or progress update and must not be sent to Telegram.',
+      'Continue the actual work in-session now and return only the final result or a concrete unresolved blocker.';
+}
+
+sub telegram_message_requires_completion {
+    my ( $self, $summary ) = @_;
+    my $body = join q{ }, grep { defined $_ && $_ ne q{} } ( $summary->{text}, $summary->{caption} );
+    return 0 if $body eq q{};
+    return $body =~ /\b(?:finish|complete|continue|do it|fix|investigate|update|implement|all gates|all tasks|run it)\b/i ? 1 : 0;
+}
+
+sub telegram_reply_is_promise_placeholder {
+    my ( $self, $reply ) = @_;
+    return 0 if !defined $reply || $reply eq q{};
+    my $normalized = lc $reply;
+    $normalized =~ s/[\r\n]+/ /g;
+    $normalized =~ s/\s+/ /g;
+    return $normalized =~ /\b(?:will be done|working on it|i will do it|i'll do it|i am working on it|i'm working on it|i will finish it|i'll finish it)\b/
+      ? 1
+      : 0;
+}
+
+sub mapped_codex_session_from_config {
+    my ( $self, $config ) = @_;
+    $config = eval { $self->read_codex_config( $self->codex_config_path ) } if !defined $config;
+    return undef if !$config || ref($config) ne 'HASH';
+    my %seen;
+    my @keys = grep { defined $_ && $_ ne q{} && !$seen{$_}++ } (
+        $self->env_value('TICKET_REF'),
+        $self->workspace_session_id,
+        $self->listener_session_id,
+        $self->env_value('CODEX_SESSION_ID'),
+        $self->env_value('TELEGRAM_CODEX_SESSION_ID'),
+    );
+    for my $key (@keys) {
+        my $mapped = $config->{$key};
+        return $mapped if defined $mapped && $mapped ne q{};
+    }
+    return undef;
 }
 
 sub telegram_media_prompt_lines {
@@ -1626,7 +1801,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.22',
+            agent   => 'telegram-codex/0.23',
         timeout => 60,
     );
     return $ua;

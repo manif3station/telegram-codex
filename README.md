@@ -46,6 +46,7 @@ When `dashboard telegram-codex.start` runs with `TELEGRAM_BOT_TOKEN` and `TELEGR
 
 The collector-owned polling loop is now the always-on path. The old standalone listener command is no longer the primary runtime model.
 When `codex.session` exists for that collector session, `dashboard telegram-codex.check-message <session-id>` automatically routes replies back through that saved Codex session.
+If `codex.session` is missing, the managed reply path falls back to the same saved-session mapping in `~/.developer-dashboard/config/codex.json` that `telegram-codex.start` uses.
 
 ## What The Skill Supports
 
@@ -157,6 +158,7 @@ The collector record created or healed by `dashboard telegram-codex.start` looks
 
 `dashboard telegram-codex.check-message <session-id>` is a long-running polling loop. Dashboard attempts to schedule it every five seconds, but singleton mode plus the same-session pid guard prevents overlap while the existing loop is still alive. When `~/.telegram-codex/<session-id>/codex.session` exists, the worker resumes that Codex session to generate the Telegram reply text. If `listener.offset` is missing or stale but `listener.inbox.jsonl` proves a newer next offset, the worker rewrites `listener.offset` to that recovered value before polling so restart state stays truthful.
 While Codex is processing a managed reply, the worker keeps Telegram `typing...` status active through both reply generation and the final outbound Telegram send so the indicator does not disappear before the reply arrives.
+For longer task-style Telegram requests, the worker also sends a separate in-progress status message while the resumed Codex session is still working, and removes that status message after the final substantive reply is delivered.
 For inbound non-text updates, the worker downloads supported attachments into `~/.telegram-codex/<session-id>/downloads/` before asking Codex to reply. Codex can send a non-text reply back by returning directive lines:
 
 ```text
@@ -190,3 +192,4 @@ The skill keeps per-session Telegram state under:
 - Do not claim outbound video send support; text, photo, audio, and document sending are implemented.
 - Do use `dashboard telegram-codex.start` for the real always-on path.
 - Do treat `dashboard telegram-codex.check-message <session-id>` as a managed collector loop, not as a short one-off polling command.
+- Do expect managed Telegram task replies to answer directly without boilerplate prefaces and to do the real in-session work before replying instead of sending a promise such as `will be done`.

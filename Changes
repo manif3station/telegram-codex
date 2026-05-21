@@ -1,3 +1,16 @@
+0.23 2026-05-21
+    - removed managed Telegram reply prefaces by telling resumed Codex
+      sessions to answer directly without greetings, acknowledgements, or
+      status boilerplate unless the user explicitly asked for them
+    - made managed Telegram task requests require real in-session work before
+      replying, and retried once with a stricter prompt when Codex returned a
+      promise-only placeholder such as `will be done`
+    - added fallback recovery of the real Codex target session from
+      `~/.developer-dashboard/config/codex.json` when the per-session
+      `codex.session` file is missing
+    - added managed Telegram in-progress status streaming for longer task
+      requests while the resumed Codex session is still working
+
 0.22 2026-05-21
     - kept the managed collector-owned Telegram `typing...` indicator alive
       through the full Codex reply lifecycle, including the final outbound

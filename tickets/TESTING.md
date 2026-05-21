@@ -15,6 +15,21 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-290` and `DD-291`:
+  - `Files=6, Tests=377`
+  - `Result: PASS`
+- Docker covered gate for `DD-290` and `DD-291`:
+  - `Files=6, Tests=377`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Managed direct-task reply regressions:
+  - managed Telegram reply prompts now tell resumed Codex sessions to answer directly without greetings, acknowledgements, or status-preface boilerplate unless the user explicitly asked for that style
+  - task-style Telegram requests now require real in-session work before reply and retry once with a stricter completion prompt when the first reply is only a promise such as `will be done`
+  - when `codex.session` is missing, the managed reply path now recovers the real Codex target session from `~/.developer-dashboard/config/codex.json` using the same saved-session mapping logic as `telegram-codex.start`
+- Managed progress-streaming regressions:
+  - the collector-owned `dashboard telegram-codex.check-message <session-id>` worker now keeps both the `typing...` guard and the in-progress status guard alive around the managed Codex work for longer task requests
+  - the real forked progress path is covered for initial status send, repeated `editMessageText` refresh, cleanup delete, and fork-failure fallback cleanup
+
 - Docker functional gate for `DD-289`:
   - `Files=6, Tests=356`
   - `Result: PASS`

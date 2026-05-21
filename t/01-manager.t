@@ -61,6 +61,7 @@ sub new_manager {
         command_runner       => $args{command_runner},
         pid_check_runner     => $args{pid_check_runner},
         typing_guard_runner  => $args{typing_guard_runner},
+        progress_guard_runner => $args{progress_guard_runner},
         fork_runner          => $args{fork_runner},
     );
 }
@@ -1168,6 +1169,75 @@ sub new_manager {
     my $runtime = tempdir( CLEANUP => 1 );
     my @post_calls;
     my @resume_calls;
+    my @progress_events;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 301,
+                        message   => {
+                            message_id => 44,
+                            text       => 'Finish all tasks with all gates',
+                            chat       => { id => 66, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        codex_resume_runner => sub {
+            my ( $session_id, $prompt, $summary ) = @_;
+            push @resume_calls, [ $session_id, $prompt, $summary ];
+            return 'Done. Final task result.';
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => {
+                    message_id => ( $method eq 'sendMessage' ? 900 : 901 ),
+                    chat       => { id => $params->{chat_id} },
+                    text       => $params->{text},
+                },
+            };
+        },
+        typing_guard_runner => sub {
+            my ( $summary, $self ) = @_;
+            push @progress_events, 'typing-start';
+            return sub {
+                push @progress_events, 'typing-stop';
+                return 1;
+            };
+        },
+        progress_guard_runner => sub {
+            my ( $summary, $self ) = @_;
+            push @progress_events, 'progress-start';
+            return sub {
+                push @progress_events, 'progress-stop';
+                return 1;
+            };
+        },
+    );
+    $manager->write_codex_target_session_id( 'skills', 'session-from-ledger' );
+    my $result = $manager->execute_check_messages( 'skills', 1, 0 );
+    is( $result->{processed}, 1, 'task-style collector-owned check-message processes the inbound Telegram task request' );
+    is( $result->{replied}, 1, 'task-style collector-owned check-message still sends the final Telegram reply' );
+    is_deeply( \@progress_events, [ 'typing-start', 'progress-start', 'progress-stop', 'typing-stop' ], 'task-style collector-owned check-message keeps both typing and progress guards around the managed Codex work' );
+    is( scalar @resume_calls, 1, 'task-style collector-owned check-message resumes Codex once when the first reply is substantive' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my @resume_calls;
     my $manager = new_manager(
         cwd  => $runtime,
         home => $runtime,
@@ -1438,6 +1508,93 @@ sub new_manager {
         cwd  => $runtime,
         home => $runtime,
         env  => {
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR      => $runtime,
+            TELEGRAM_CODEX_LISTENER_MODE    => 'codex-session',
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-task-work',
+        },
+        fork_runner => sub { return undef; },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 990, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    my $guard = $manager->start_listener_progress_guard(
+        {
+            update_id  => 30001,
+            message_id => 301,
+            chat       => { id => 88, type => 'private' },
+            text       => 'Finish all tasks with all gates',
+        },
+    );
+    ok( $guard, 'start_listener_progress_guard falls back to a cleanup callback when the progress fork cannot be created' );
+    ok( $guard->(), 'progress cleanup callback from fork failure is still callable' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $progress_log = File::Spec->catfile( $runtime, 'progress.log' );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR      => $runtime,
+            TELEGRAM_CODEX_LISTENER_MODE    => 'codex-session',
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-task-work',
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            open my $fh, '>>', $progress_log or die $!;
+            print {$fh} "$method\n";
+            close $fh or die $!;
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 991, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    my $summary = {
+        update_id  => 30002,
+        message_id => 302,
+        chat       => { id => 88, type => 'private' },
+        text       => 'Finish all tasks with all gates',
+    };
+    is(
+        $manager->listener_progress_text( 'start', 0 ),
+        'Codex is working on your request in this session. I will send the final result when the work is done.',
+        'listener_progress_text returns the initial managed progress message'
+    );
+    is(
+        $manager->listener_progress_text( 'continue', 1 ),
+        'Codex is still working on your request...',
+        'listener_progress_text returns the repeating managed progress message'
+    );
+    is( $manager->listener_progress_interval_seconds, 5, 'listener_progress_interval_seconds returns the default progress heartbeat interval' );
+    local *Telegram::Codex::Manager::listener_progress_interval_seconds = sub { return 0.1; };
+    my $guard = $manager->start_listener_progress_guard($summary);
+    ok( $guard, 'start_listener_progress_guard returns a cleanup callback for the real forked progress path' );
+    select undef, undef, undef, 0.25;
+    $guard->();
+    my $log = do {
+        open my $fh, '<', $progress_log or die $!;
+        local $/;
+        <$fh>;
+    };
+    like( $log, qr/sendMessage/, 'start_listener_progress_guard posts the initial progress message' );
+    like( $log, qr/editMessageText/, 'start_listener_progress_guard refreshes the progress message while work is still running' );
+    like( $log, qr/deleteMessage/, 'start_listener_progress_guard deletes the progress message after cleanup' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
             TELEGRAM_BOT_TOKEN         => 'token-xyz',
             TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
         },
@@ -1699,6 +1856,21 @@ sub new_manager {
 
 {
     my $manager = new_manager;
+    my $prompt = $manager->codex_session_reply_prompt(
+        {
+            message_id => 77,
+            text       => 'Finish all tasks with all gates',
+            caption    => q{},
+            chat       => { id => 88 },
+        }
+    );
+    like( $prompt, qr/Do the actual work in this resumed Codex session before you reply/i, 'task-style Telegram prompts tell Codex to do the work before replying' );
+    like( $prompt, qr/Do not prepend greetings, acknowledgements, or status prefaces/i, 'task-style Telegram prompts block boilerplate prefaces' );
+    like( $prompt, qr/Do not send promise-only replies such as .*will be done/i, 'task-style Telegram prompts block promise-only placeholder replies' );
+}
+
+{
+    my $manager = new_manager;
     my @descriptors = $manager->summary_media_descriptors(
         {
             update_id => 500,
@@ -1758,6 +1930,80 @@ EOF
     };
     like( $args, qr/^exec\n--dangerously-bypass-approvals-and-sandbox\nresume\n--skip-git-repo-check\n--output-last-message\n/m, 'codex_session_reply_for_update invokes codex exec resume with the bypass flag and output capture file' );
     like( $args, qr/session-real-resume/, 'codex_session_reply_for_update targets the managed session id when it runs the real codex binary' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @resume_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR      => $runtime,
+            CODEX_SESSION_ID                => 'skills',
+            TELEGRAM_CODEX_SESSION_ID       => 'skills',
+            TELEGRAM_CODEX_LISTENER_MODE    => 'codex-session',
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-real-resume',
+        },
+        codex_resume_runner => sub {
+            my ( $session_id, $prompt, $summary ) = @_;
+            push @resume_calls, [ $session_id, $prompt, $summary ];
+            return @resume_calls == 1 ? 'Will be done.' : 'Done. All requested tasks are now complete.';
+        },
+    );
+    my $reply = $manager->codex_session_reply_for_update(
+        {
+            message_id => 15,
+            text       => 'Finish all tasks with all gates',
+            chat       => { id => 88, type => 'private' },
+        }
+    );
+    is( scalar @resume_calls, 2, 'codex_session_reply_for_update retries once when the first task reply is only a promise placeholder' );
+    like( $resume_calls[1][1], qr/The prior reply was only a promise or progress update/i, 'codex_session_reply_for_update uses a stricter retry prompt after a promise-only reply' );
+    is( $reply, 'Done. All requested tasks are now complete.', 'codex_session_reply_for_update returns the stricter retry result instead of the placeholder promise' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $config_root = File::Spec->catdir( $home, '.developer-dashboard', 'config' );
+    make_path($config_root);
+    _write(
+        File::Spec->catfile( $config_root, 'codex.json' ),
+        encode_json(
+            {
+                talbot       => 'session-talbot-42',
+                _last_action => 'Add talbot',
+                _last_update => '2026-05-21 08:00:00',
+            }
+        ),
+    );
+    my @resume_calls;
+    my $manager = new_manager(
+        cwd  => File::Spec->catdir( $home, 'skills' ),
+        home => $home,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => '~/.telegram-codex',
+            TELEGRAM_CODEX_SESSION_ID  => 'skills',
+            CODEX_SESSION_ID           => 'skills',
+            TICKET_REF                 => 'talbot',
+        },
+        codex_resume_runner => sub {
+            my ( $session_id, $prompt, $summary ) = @_;
+            push @resume_calls, [ $session_id, $prompt, $summary ];
+            return 'Mapped saved-session reply.';
+        },
+    );
+    my $reply = $manager->codex_session_reply_for_update(
+        {
+            message_id => 16,
+            text       => 'status?',
+            chat       => { id => 99, type => 'private' },
+        }
+    );
+    is( $resume_calls[0][0], 'session-talbot-42', 'codex_session_reply_for_update falls back to codex.json saved-session mapping when codex.session is missing' );
+    is( $reply, 'Mapped saved-session reply.', 'codex_session_reply_for_update returns the mapped-session response' );
 }
 
 {
