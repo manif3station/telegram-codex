@@ -244,6 +244,24 @@ sub capture_run {
         sub {
             my ( $out_fh, $err_fh ) = @_;
             my $manager = Telegram::Codex::Manager->new(
+                stdout_fh => $out_fh,
+                stderr_fh => $err_fh,
+                env       => { VERSION => '0.24' },
+            );
+            return $manager->main_start('--version');
+        }
+    );
+    is( $rc, 0, 'main_start --version succeeds' );
+    is( $stderr, q{}, 'main_start --version leaves stderr empty' );
+    is( decode_json($stdout)->{action}, 'version', 'main_start --version prints version metadata instead of running startup side effects' );
+    is( decode_json($stdout)->{version}, '0.24', 'main_start --version reports the skill version' );
+}
+
+{
+    my ( $rc, $stdout, $stderr ) = capture_run(
+        sub {
+            my ( $out_fh, $err_fh ) = @_;
+            my $manager = Telegram::Codex::Manager->new(
                 stdout_fh   => $out_fh,
                 stderr_fh   => $err_fh,
                 env         => { TELEGRAM_BOT_TOKEN => 'token-xyz' },

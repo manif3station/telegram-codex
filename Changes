@@ -1,3 +1,11 @@
+0.24 2026-05-21
+    - made `dashboard telegram-codex.start --version` a side-effect-free
+      version query so DD launcher probes no longer create or restart managed
+      Telegram collectors
+    - changed the real Codex and Ollama launch path to `exec` instead of
+      `system(...)` so successful managed startup no longer leaves an extra
+      resident `cli/start` wrapper process waiting in the background
+
 0.23 2026-05-21
     - removed managed Telegram reply prefaces by telling resumed Codex
       sessions to answer directly without greetings, acknowledgements, or

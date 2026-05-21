@@ -15,6 +15,17 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-292`:
+  - `Files=6, Tests=386`
+  - `Result: PASS`
+- Docker covered gate for `DD-292`:
+  - `Files=6, Tests=386`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Start probe and wrapper-process regressions:
+  - `dashboard telegram-codex.start --version` now returns pure version metadata without building collector startup state or restarting DD collectors
+  - successful managed startup now uses `exec` for the real Codex or Ollama handoff, so the wrapper does not remain as an extra resident `cli/start` parent process
+  - the covered gate continues to use `cover -ignore_covered_err` only for intentional child-process redirection and post-`exec` fallback statements marked `# uncoverable statement`
 - Docker functional gate for `DD-290` and `DD-291`:
   - `Files=6, Tests=377`
   - `Result: PASS`

@@ -44,6 +44,9 @@ When `dashboard telegram-codex.start` runs with `TELEGRAM_BOT_TOKEN` and `TELEGR
    - `mode` fixed to `singleton`
 7. launches the real Codex binary
 
+`dashboard telegram-codex.start --version` is a pure metadata query. DD can probe it safely without creating or restarting collectors.
+Successful managed startup now hands off with `exec`, so the wrapper process does not stay resident as an extra long-lived `cli/start` parent after Codex or Ollama takes over.
+
 The collector-owned polling loop is now the always-on path. The old standalone listener command is no longer the primary runtime model.
 When `codex.session` exists for that collector session, `dashboard telegram-codex.check-message <session-id>` automatically routes replies back through that saved Codex session.
 If `codex.session` is missing, the managed reply path falls back to the same saved-session mapping in `~/.developer-dashboard/config/codex.json` that `telegram-codex.start` uses.

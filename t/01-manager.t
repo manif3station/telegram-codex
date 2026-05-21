@@ -370,6 +370,33 @@ sub new_manager {
 
 {
     my $home = tempdir( CLEANUP => 1 );
+    my @commands;
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        env  => {
+            VERSION                         => '0.24',
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_ENABLE_AUTOSTART => '1',
+            TELEGRAM_CODEX_START_CAPTURE    => 1,
+            CODEX_REAL_BIN                  => '/opt/codex/bin/codex-real',
+        },
+        command_runner => sub {
+            my ($command) = @_;
+            push @commands, [@$command];
+            return { ok => 1 };
+        },
+    );
+    my $result = $manager->execute_start('--version');
+    is( $result->{mode}, 'start', 'execute_start --version reports start mode metadata' );
+    is( $result->{action}, 'version', 'execute_start --version is a pure version query' );
+    is( $result->{version}, '0.24', 'execute_start --version reports the skill version from env state' );
+    ok( !exists $result->{collector_name}, 'execute_start --version does not build collector startup plan data' );
+    is_deeply( \@commands, [], 'execute_start --version does not touch dashboard collector orchestration' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
     my $config_root = File::Spec->catdir( $home, '.developer-dashboard', 'config' );
     make_path($config_root);
     _write(

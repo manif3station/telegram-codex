@@ -106,6 +106,15 @@ sub auto_setup {
 sub execute_start {
     my ( $self, @argv ) = @_;
     my $cmd = defined $argv[0] ? $argv[0] : q{};
+
+    if ( $cmd eq '--version' || $cmd eq '-V' || $cmd eq 'version' ) {
+        return {
+            mode    => 'start',
+            action  => 'version',
+            version => $self->env_value('VERSION') || '0.00',
+        };
+    }
+
     my $config_path = $self->codex_config_path;
     my $config = $self->read_codex_config($config_path);
     my $ticket = $self->env_value('TICKET_REF');
@@ -158,16 +167,16 @@ sub execute_start {
     if ( my $ollama_model = $self->env_value('OLLAMA_MODEL') ) {
         my $default_model = 'qwen3.5:397b-cloud';
         if ( $ollama_model eq '2' ) {
-            my $exit = system( qw(ollama launch codex --model), $default_model );
-            exit( $exit == -1 ? 1 : ( $exit >> 8 ) );
+            exec 'ollama', qw(launch codex --model), $default_model;
+            die "Unable to exec ollama: $!"; # uncoverable statement
         }
         $ollama_model = $default_model if $ollama_model eq '1';
-        my $exit = system( qw(ollama launch codex --model), $ollama_model, '--', @{ $plan->{codex_args} } );
-        exit( $exit == -1 ? 1 : ( $exit >> 8 ) );
+        exec 'ollama', qw(launch codex --model), $ollama_model, '--', @{ $plan->{codex_args} };
+        die "Unable to exec ollama: $!"; # uncoverable statement
     }
 
-    my $exit = system { $plan->{real_codex_bin} } $plan->{real_codex_bin}, @{ $plan->{codex_args} };
-    exit( $exit == -1 ? 1 : ( $exit >> 8 ) );
+    exec { $plan->{real_codex_bin} } $plan->{real_codex_bin}, @{ $plan->{codex_args} };
+    die "Unable to exec $plan->{real_codex_bin}: $!"; # uncoverable statement
 }
 
 sub execute_get_me {
@@ -1801,7 +1810,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-            agent   => 'telegram-codex/0.23',
+        agent   => 'telegram-codex/0.24',
         timeout => 60,
     );
     return $ua;
