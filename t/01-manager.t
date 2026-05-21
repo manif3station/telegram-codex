@@ -60,6 +60,8 @@ sub new_manager {
         codex_resume_runner  => $args{codex_resume_runner},
         command_runner       => $args{command_runner},
         pid_check_runner     => $args{pid_check_runner},
+        typing_guard_runner  => $args{typing_guard_runner},
+        fork_runner          => $args{fork_runner},
     );
 }
 
@@ -1100,12 +1102,21 @@ sub new_manager {
     my $runtime = tempdir( CLEANUP => 1 );
     my @post_calls;
     my @resume_calls;
+    my @typing_events;
     my $manager = new_manager(
         cwd  => $runtime,
         home => $runtime,
         env  => {
             TELEGRAM_BOT_TOKEN         => 'token-xyz',
             TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        typing_guard_runner => sub {
+            my ( $summary, $self ) = @_;
+            push @typing_events, 'guard-start';
+            return sub {
+                push @typing_events, 'guard-stop';
+                return 1;
+            };
         },
         get_runner => sub {
             return {
@@ -1124,12 +1135,14 @@ sub new_manager {
         },
         codex_resume_runner => sub {
             my ( $session_id, $prompt, $summary ) = @_;
+            push @typing_events, 'resume';
             push @resume_calls, [ $session_id, $prompt, $summary ];
             return 'Collector reply from Codex session.';
         },
         post_runner => sub {
             my ( $method, $params ) = @_;
             push @post_calls, [ $method, $params ];
+            push @typing_events, 'send' if $method ne 'sendChatAction';
             return {
                 ok     => JSON::XS::true,
                 result => { message_id => 777, chat => { id => $params->{chat_id} }, text => $params->{text} },
@@ -1148,6 +1161,359 @@ sub new_manager {
     is( $post_calls[0][1]{action}, 'typing', 'collector-owned check-message uses Telegram typing status while Codex is generating the reply' );
     is( $post_calls[1][0], 'sendMessage', 'collector-owned check-message sends the final Telegram reply after the typing action' );
     is( $post_calls[1][1]{text}, 'Collector reply from Codex session.', 'collector-owned check-message sends the Codex-generated reply text' );
+    is_deeply( \@typing_events, [ 'guard-start', 'resume', 'send', 'guard-stop' ], 'collector-owned check-message keeps the typing guard alive until the final Telegram reply send finishes' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my @resume_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 10101,
+                        message   => {
+                            message_id => 193,
+                            text       => 'Static collector reply',
+                            chat       => { id => 98, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        codex_resume_runner => sub {
+            push @resume_calls, [@_];
+            return 'unexpected';
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 782, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    my $result = $manager->execute_check_messages( 'skills', 1, 0, 'Static collector reply sent.' );
+    is( $result->{processed}, 1, 'collector-owned check-message processes inbound messages in static reply mode too' );
+    is( $result->{replied}, 1, 'collector-owned check-message sends a static reply when explicit reply text is supplied' );
+    is( scalar @resume_calls, 0, 'collector-owned check-message does not resume Codex in static reply mode' );
+    is( scalar @post_calls, 1, 'collector-owned check-message sends only the final Telegram reply in static reply mode' );
+    is( $post_calls[0][0], 'sendMessage', 'collector-owned check-message does not send typing status in static reply mode' );
+    is( $post_calls[0][1]{text}, 'Static collector reply sent.', 'collector-owned check-message sends the explicit static reply text' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @typing_events;
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        typing_guard_runner => sub {
+            my ( $summary, $self ) = @_;
+            push @typing_events, 'guard-start';
+            return sub {
+                push @typing_events, 'guard-stop';
+                return 1;
+            };
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 1011,
+                        message   => {
+                            message_id => 191,
+                            text       => 'Guard cleanup on failure',
+                            chat       => { id => 99, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        codex_resume_runner => sub {
+            push @typing_events, 'resume';
+            die "Codex resume failed for Telegram reply\n";
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 780, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    $manager->write_codex_target_session_id( 'skills', 'session-from-ledger' );
+    my $result = $manager->execute_check_messages( 'skills', 1, 0 );
+    is( $result->{processed}, 1, 'collector-owned check-message still records the inbound message when managed Codex reply generation fails' );
+    is( $result->{replied}, 0, 'collector-owned check-message does not count a failed managed Codex reply generation as replied' );
+    like( $result->{reply_errors}[0]{error}, qr/Codex resume failed for Telegram reply/, 'collector-owned check-message records the managed Codex failure' );
+    is_deeply( \@typing_events, [ 'guard-start', 'resume', 'guard-stop' ], 'typing guard cleanup still runs when the managed Codex reply generation fails' );
+    is( scalar @post_calls, 1, 'collector-owned check-message does not attempt a final send when managed Codex reply generation fails' );
+    is( $post_calls[0][0], 'sendChatAction', 'collector-owned check-message only sent the typing action before the managed reply failure' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @typing_events;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        typing_guard_runner => sub {
+            my ( $summary, $self ) = @_;
+            push @typing_events, 'guard-start';
+            return sub {
+                push @typing_events, 'guard-stop';
+                return 1;
+            };
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 1012,
+                        message   => {
+                            message_id => 192,
+                            text       => 'Guard cleanup on send failure',
+                            chat       => { id => 99, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        codex_resume_runner => sub {
+            push @typing_events, 'resume';
+            return 'Reply before send failure.';
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @typing_events, 'send' if $method eq 'sendMessage';
+            die "Telegram POST failed for sendMessage: 500 Internal Server Error\n" if $method eq 'sendMessage';
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 781, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    $manager->write_codex_target_session_id( 'skills', 'session-from-ledger' );
+    my $result = $manager->execute_check_messages( 'skills', 1, 0 );
+    is( $result->{processed}, 1, 'collector-owned check-message still records the inbound message when final Telegram delivery fails' );
+    is( $result->{replied}, 0, 'collector-owned check-message does not count a failed final Telegram delivery as replied' );
+    like( $result->{reply_errors}[0]{error}, qr/sendMessage: 500 Internal Server Error/, 'collector-owned check-message records the final Telegram delivery failure' );
+    is_deeply( \@typing_events, [ 'guard-start', 'resume', 'send', 'guard-stop' ], 'typing guard cleanup still runs after a final Telegram delivery failure' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { ok => JSON::XS::true },
+            };
+        },
+    );
+    my @typing_errors;
+    my $returned = $manager->with_listener_typing_status(
+        {
+            update_id => 2001,
+            message_id => 91,
+            chat => { id => 99, type => 'private' },
+            text => 'void context branch',
+        },
+        typing_errors => \@typing_errors,
+        code => sub {
+            push @typing_errors, { marker => 'callback-ran' };
+            return 'unused';
+        },
+    );
+    is( $returned, 'unused', 'with_listener_typing_status returns callback result in scalar context' );
+    is( $post_calls[0][0], 'sendChatAction', 'with_listener_typing_status sends the initial typing action directly' );
+    is( $typing_errors[-1]{marker}, 'callback-ran', 'with_listener_typing_status runs the callback body' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { ok => JSON::XS::true },
+            };
+        },
+    );
+    my @values = $manager->with_listener_typing_status(
+        {
+            update_id => 20011,
+            message_id => 911,
+            chat => { id => 99, type => 'private' },
+            text => 'list context branch',
+        },
+        code => sub {
+            return ( 'first', 'second' );
+        },
+    );
+    is_deeply( \@values, [ 'first', 'second' ], 'with_listener_typing_status returns callback results in list context' );
+    is( $post_calls[0][0], 'sendChatAction', 'with_listener_typing_status still sends typing in list context' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { ok => JSON::XS::true },
+            };
+        },
+    );
+    my $ran = 0;
+    $manager->with_listener_typing_status(
+        {
+            update_id => 20012,
+            message_id => 912,
+            chat => { id => 99, type => 'private' },
+            text => 'void context branch',
+        },
+        code => sub {
+            $ran = 1;
+            return 'ignored';
+        },
+    );
+    ok( $ran, 'with_listener_typing_status runs the callback body in void context' );
+    is( $post_calls[0][0], 'sendChatAction', 'with_listener_typing_status still sends typing in void context' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+    );
+    my $guard = $manager->start_listener_typing_guard(
+        {
+            update_id => 2002,
+            message_id => 92,
+            chat => { type => 'private' },
+            text => q{},
+        },
+    );
+    ok( !defined $guard, 'start_listener_typing_guard returns undef when the update does not qualify for managed typing status' );
+    ok( !defined $manager->send_listener_typing_action( { chat => { id => 99 }, text => q{} } ), 'send_listener_typing_action is a no-op when the update does not qualify for typing status' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        fork_runner => sub { return undef; },
+    );
+    my $guard = $manager->start_listener_typing_guard(
+        {
+            update_id => 20021,
+            message_id => 921,
+            chat => { id => 99, type => 'private' },
+            text => 'simulated fork failure',
+        },
+    );
+    ok( !defined $guard, 'start_listener_typing_guard falls back cleanly when the heartbeat fork cannot be created' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $typing_log = File::Spec->catfile( $runtime, 'typing.log' );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            open my $fh, '>>', $typing_log or die $!;
+            print {$fh} "$method\n";
+            close $fh or die $!;
+            return {
+                ok     => JSON::XS::true,
+                result => { ok => JSON::XS::true },
+            };
+        },
+    );
+    my $summary = {
+        update_id => 2003,
+        message_id => 93,
+        chat => { id => 99, type => 'private' },
+        text => 'forked typing guard branch',
+    };
+    local *Telegram::Codex::Manager::listener_typing_interval_seconds = sub { return 0.1; };
+    my $guard = $manager->start_listener_typing_guard($summary);
+    ok( $guard, 'start_listener_typing_guard returns a cleanup callback for the real forked heartbeat path' );
+    select undef, undef, undef, 0.25;
+    $guard->();
+    my $log = do {
+        open my $fh, '<', $typing_log or die $!;
+        local $/;
+        <$fh>;
+    };
+    like( $log, qr/sendChatAction/, 'start_listener_typing_guard sends repeated typing actions from the forked heartbeat path' );
 }
 
 {

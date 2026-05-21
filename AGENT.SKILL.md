@@ -65,7 +65,7 @@ The collector shape is:
 }
 ```
 
-`dashboard telegram-codex.check-message <session-id>` is a long-running polling loop. Dashboard may try to start it every five seconds, but singleton mode plus the same-session pid guard prevents overlap while the active loop is still running. When `codex.session` exists for that session, the worker replies through that persisted Codex session automatically. If `listener.inbox.jsonl` proves a newer next offset than `listener.offset`, the worker rewrites `listener.offset` before polling so restart state stays accurate. While a managed Codex reply is being generated, the worker sends Telegram `typing...` status first. Supported inbound media is downloaded into the session runtime before Codex replies, and Codex can return attachment directives to send photos, audio, or documents back to Telegram.
+`dashboard telegram-codex.check-message <session-id>` is a long-running polling loop. Dashboard may try to start it every five seconds, but singleton mode plus the same-session pid guard prevents overlap while the active loop is still running. When `codex.session` exists for that session, the worker replies through that persisted Codex session automatically. If `listener.inbox.jsonl` proves a newer next offset than `listener.offset`, the worker rewrites `listener.offset` before polling so restart state stays accurate. While a managed Codex reply is being processed, the worker keeps Telegram `typing...` status active until the final outbound Telegram send attempt completes. Supported inbound media is downloaded into the session runtime before Codex replies, and Codex can return attachment directives to send photos, audio, or documents back to Telegram.
 
 ## What The Skill Can Receive
 

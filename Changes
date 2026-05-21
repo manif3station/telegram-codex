@@ -1,3 +1,12 @@
+0.22 2026-05-21
+    - kept the managed collector-owned Telegram `typing...` indicator alive
+      through the full Codex reply lifecycle, including the final outbound
+      Telegram send, instead of stopping as soon as reply text generation
+      finished
+    - added Docker-verified TDD coverage proving the typing guard now stays
+      active until the final `sendMessage` attempt completes and still cleans
+      up correctly when reply generation or final delivery fails
+
 0.21 2026-05-21
     - fixed Telegram Bot API `getFile` requests to send query-string
       parameters instead of mistaken HTTP headers so inbound photo, PDF,

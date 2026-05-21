@@ -15,6 +15,17 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-289`:
+  - `Files=6, Tests=356`
+  - `Result: PASS`
+- Docker covered gate for `DD-289`:
+  - `Files=6, Tests=356`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Managed typing-delivery regressions:
+  - the collector-owned `dashboard telegram-codex.check-message <session-id>` worker now keeps the typing guard alive through the final outbound Telegram send attempt instead of stopping as soon as Codex finishes generating reply text
+  - typing guard cleanup still runs when managed Codex reply generation fails
+  - typing guard cleanup still runs when the final Telegram send fails
 - Docker functional gate for `DD-288`:
   - `Files=6, Tests=327`
   - `Result: PASS`

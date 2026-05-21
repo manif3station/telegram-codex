@@ -69,7 +69,7 @@ The collector definition installed or healed by `telegram-codex.start` is:
 }
 ```
 
-Dashboard may try to schedule it every five seconds, but singleton mode plus the same-session pid guard prevents a second `check-message <session-id>` copy from starting while the existing loop is still running. If `~/.telegram-codex/<session-id>/codex.session` exists, the worker automatically resumes that Codex session to generate the Telegram reply. If `listener.inbox.jsonl` proves a newer next offset than `listener.offset`, the worker rewrites `listener.offset` before polling so restart state and replay diagnostics stay aligned. While that managed reply is being generated, the worker sends Telegram `typing...` status first.
+Dashboard may try to schedule it every five seconds, but singleton mode plus the same-session pid guard prevents a second `check-message <session-id>` copy from starting while the existing loop is still running. If `~/.telegram-codex/<session-id>/codex.session` exists, the worker automatically resumes that Codex session to generate the Telegram reply. If `listener.inbox.jsonl` proves a newer next offset than `listener.offset`, the worker rewrites `listener.offset` before polling so restart state and replay diagnostics stay aligned. While that managed reply is being processed, the worker keeps Telegram `typing...` status active until the final outbound Telegram send attempt completes.
 Before that managed reply is generated, supported inbound Telegram media is downloaded into the session runtime and exposed to Codex through `*_local_path=` lines in the reply prompt.
 
 Stop it with Dashboard:

@@ -35,6 +35,8 @@ sub new {
         codex_resume_runner  => $args{codex_resume_runner},
         command_runner       => $args{command_runner},
         pid_check_runner     => $args{pid_check_runner},
+        typing_guard_runner  => $args{typing_guard_runner},
+        fork_runner          => $args{fork_runner},
     }, $class;
     $self->{env} = $args{env} || $self->_merged_env;
     $self->{ua} = $args{ua} || $self->_build_ua;
@@ -406,34 +408,30 @@ sub execute_check_messages {
             my $reply_mode = $self->listener_reply_mode_for_update($reply_text);
             $summary = $self->hydrate_summary_media_paths($summary)
               if $reply_mode eq 'codex-session';
-            if ( defined $chat_id && $self->listener_should_send_typing( $summary, $reply_mode ) ) {
-                my $typing = eval {
-                    $self->telegram_post(
-                        'sendChatAction',
-                        {
-                            chat_id => $chat_id,
-                            action  => 'typing',
-                        }
-                    );
-                };
-                if ( my $error = $@ ) {
-                    chomp $error;
-                    push @typing_errors, {
-                        update_id  => $summary->{update_id},
-                        chat_id    => $chat_id,
-                        message_id => $message->{message_id},
-                        error      => $error,
-                    };
-                }
-            }
-            my $reply_message = $self->listener_reply_message_for_update( $summary, $reply_text, $reply_mode );
-            if ( defined $reply_message && $reply_message ne q{} && defined $chat_id && $self->update_needs_listener_reply($summary) ) {
+            if ( defined $chat_id && $self->update_needs_listener_reply($summary) ) {
                 my $sent = eval {
-                    $self->dispatch_listener_reply(
-                        chat_id             => $chat_id,
-                        reply_to_message_id => $message->{message_id},
-                        reply_message       => $reply_message,
-                    );
+                    my $runner = sub {
+                        my $reply_message = $self->listener_reply_message_for_update(
+                            $summary,
+                            $reply_text,
+                            $reply_mode,
+                        );
+                        return 0 if !defined $reply_message || $reply_message eq q{};
+                        $self->dispatch_listener_reply(
+                            chat_id             => $chat_id,
+                            reply_to_message_id => $message->{message_id},
+                            reply_message       => $reply_message,
+                        );
+                        return 1;
+                    };
+                    if ( $reply_mode eq 'codex-session' ) {
+                        return $self->with_listener_typing_status(
+                            $summary,
+                            typing_errors => \@typing_errors,
+                            code          => $runner,
+                        );
+                    }
+                    return $runner->();
                 };
                 if ( my $error = $@ ) {
                     chomp $error;
@@ -444,7 +442,7 @@ sub execute_check_messages {
                         error      => $error,
                     };
                 }
-                else {
+                elsif ($sent) {
                     $replied++;
                 }
             }
@@ -842,7 +840,7 @@ sub start_listener_if_needed {
         };
     }
 
-    my $pid = fork();
+    my $pid = $self->{fork_runner} ? $self->{fork_runner}->() : fork();
     die "Unable to fork telegram listener: $!" if !defined $pid;
     if ( $pid == 0 ) {
         open STDIN,  '<', '/dev/null'         or die "Unable to reopen stdin: $!";  # uncoverable statement
@@ -1314,11 +1312,9 @@ sub listener_should_send_typing {
 }
 
 sub listener_reply_message_for_update {
-    my ( $self, $summary, $reply_text, $mode ) = @_;
+    my ( $self, $summary, $reply_text, $mode, %args ) = @_;
     $mode = $self->listener_reply_mode_for_update($reply_text) if !defined $mode || $mode eq q{};
-    if ( $mode eq 'codex-session' ) {
-        return $self->codex_session_reply_for_update($summary);
-    }
+    return $self->codex_session_reply_for_update($summary) if $mode eq 'codex-session';
     return $reply_text;
 }
 
@@ -1354,6 +1350,108 @@ sub codex_session_reply_for_update {
     $reply =~ s/\A\s+//;
     $reply =~ s/\s+\z//;
     return $reply;
+}
+
+sub with_listener_typing_status {
+    my ( $self, $summary, %args ) = @_;
+    my $typing_errors = $args{typing_errors} || [];
+    my $code = $args{code};
+    my $guard;
+    if ( $self->listener_should_send_typing( $summary, 'codex-session' ) ) {
+        my $error = $self->send_listener_typing_action($summary);
+        push @{$typing_errors}, $error if $error;
+        $guard = $self->start_listener_typing_guard($summary);
+    }
+    my $wantarray = wantarray;
+    my ( @results, $result );
+    my $ok = eval {
+        if ($wantarray) {
+            @results = $code->();
+        }
+        elsif ( defined $wantarray ) {
+            $result = $code->();
+        }
+        else {
+            $code->();
+        }
+        return 1;
+    };
+    my $error = $@;
+    if ($guard) {
+        my $cleanup_ok = eval {
+            $guard->();
+            return 1;
+        };
+        die $@ if !$cleanup_ok && !$error;
+    }
+    die $error if !$ok;
+    return $wantarray ? @results : $result;
+}
+
+sub start_listener_typing_guard {
+    my ( $self, $summary ) = @_;
+    return undef if !$self->listener_should_send_typing( $summary, 'codex-session' );
+    return $self->{typing_guard_runner}->( $summary, $self ) if $self->{typing_guard_runner};
+    my $chat_id = $summary->{chat}{id};
+    return undef if !defined $chat_id;
+    pipe( my $reader, my $writer ) or return undef;
+    my $pid = $self->{fork_runner} ? $self->{fork_runner}->() : fork();
+    if ( !defined $pid ) {
+        close $reader;
+        close $writer;
+        return undef;
+    }
+    if ( !$pid ) {
+        close $writer;
+        my $interval = $self->listener_typing_interval_seconds;
+        while (1) {
+            my $rin = q{};
+            vec( $rin, fileno($reader), 1 ) = 1;
+            my $ready = select( my $rout = $rin, undef, undef, $interval );
+            last if $ready;
+            eval { $self->send_listener_typing_action($summary) };
+        }
+        close $reader;
+        exit 0;
+    }
+    close $reader;
+    return sub {
+        close $writer;
+        waitpid( $pid, 0 );
+        return 1;
+    };
+}
+
+sub send_listener_typing_action {
+    my ( $self, $summary ) = @_;
+    return undef if !$self->listener_should_send_typing( $summary, 'codex-session' );
+    my $message_id = $summary->{message_id};
+    my $chat_id = $summary->{chat}{id};
+    my $error = eval {
+        $self->telegram_post(
+            'sendChatAction',
+            {
+                chat_id => $chat_id,
+                action  => 'typing',
+            }
+        );
+        return undef;
+    };
+    if ( my $failure = $@ ) {
+        chomp $failure;
+        return {
+            update_id  => $summary->{update_id},
+            chat_id    => $chat_id,
+            message_id => $message_id,
+            error      => $failure,
+        };
+    }
+    return undef;
+}
+
+sub listener_typing_interval_seconds {
+    my ($self) = @_;
+    return 3;
 }
 
 sub codex_session_reply_prompt {
@@ -1528,7 +1626,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.21',
+        agent   => 'telegram-codex/0.22',
         timeout => 60,
     );
     return $ua;
