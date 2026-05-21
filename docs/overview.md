@@ -35,3 +35,8 @@ Outbound send support currently covers:
 - photos
 - audio
 - documents
+
+Managed media understanding currently splits into two paths:
+
+- downloaded Telegram photos and image documents are attached to resumed Codex replies as real image inputs
+- audio, voice, video, PDFs, and other non-image files are downloaded locally and exposed by path for tool-based inspection, not direct binary model attachment

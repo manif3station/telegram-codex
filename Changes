@@ -1,3 +1,11 @@
+0.28 2026-05-21
+    - attached downloaded Telegram photos and image documents to resumed
+      Codex replies as real `codex exec resume -i` image inputs instead of
+      only describing them by local path in the prompt
+    - narrowed the managed media contract so audio, voice, video, PDF, and
+      other non-image files stay local-path inputs for tool-based inspection
+      instead of being described as direct binary model attachments
+
 0.27 2026-05-21
     - stopped `dashboard telegram-codex.start` from treating ambient
       workspace `OLLAMA_MODEL` as an automatic provider switch, so managed

@@ -73,7 +73,8 @@ Attachment handling:
 
 - metadata is available directly in updates and collector processing
 - managed `dashboard telegram-codex.check-message <session-id>` now downloads inbound supported media into the session runtime before Codex replies
-- the Codex prompt receives `*_local_path=` lines for those downloaded files
+- downloaded Telegram photos and image documents are attached to resumed Codex replies as real `codex exec resume -i` image inputs
+- the Codex prompt still receives `*_local_path=` lines for downloaded files, but non-image media remains a local-path input for tool-based inspection rather than a direct binary model attachment
 - direct `dashboard telegram-codex.download <FILE_ID>` and managed inbound-media downloads now use Telegram Bot API `getFile` query-string parameters correctly, so real photo and file downloads work in live runs
 
 ## Commands
@@ -162,7 +163,7 @@ The collector record created or healed by `dashboard telegram-codex.start` looks
 `dashboard telegram-codex.check-message <session-id>` is a long-running polling loop. Dashboard attempts to schedule it every five seconds, but singleton mode plus the same-session pid guard prevents overlap while the existing loop is still alive. When `~/.telegram-codex/<session-id>/codex.session` exists, the worker resumes that Codex session to generate the Telegram reply text. If `listener.offset` is missing or stale but `listener.inbox.jsonl` proves a newer next offset, the worker rewrites `listener.offset` to that recovered value before polling so restart state stays truthful.
 While Codex is processing a managed reply, the worker keeps Telegram `typing...` status active through both reply generation and the final outbound Telegram send so the indicator does not disappear before the reply arrives.
 For longer task-style Telegram requests, the worker also sends a separate in-progress status message while the resumed Codex session is still working, and removes that status message after the final substantive reply is delivered.
-For inbound non-text updates, the worker downloads supported attachments into `~/.telegram-codex/<session-id>/downloads/` before asking Codex to reply. Codex can send a non-text reply back by returning directive lines:
+For inbound non-text updates, the worker downloads supported attachments into `~/.telegram-codex/<session-id>/downloads/` before asking Codex to reply. Downloaded Telegram photos and image documents are attached to the resumed Codex session as real image inputs. Other downloaded media still flows by local path for tool-based inspection. Codex can send a non-text reply back by returning directive lines:
 
 ```text
 telegram_attachment_type=photo|audio|document
@@ -193,6 +194,7 @@ The skill keeps per-session Telegram state under:
 
 - Do not claim binary media content was read unless the file was downloaded first.
 - Do not claim outbound video send support; text, photo, audio, and document sending are implemented.
+- Do not claim audio, voice, video, or PDF bytes were attached directly to the model; today only downloaded Telegram photos and image documents are attached as real Codex image inputs.
 - Do use `dashboard telegram-codex.start` for the real always-on path.
 - Do treat `dashboard telegram-codex.check-message <session-id>` as a managed collector loop, not as a short one-off polling command.
 - Do expect managed Telegram task replies to answer directly without boilerplate prefaces and to do the real in-session work before replying instead of sending a promise such as `will be done`.

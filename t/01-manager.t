@@ -2037,6 +2037,8 @@ sub new_manager {
             voice      => { file_id => 'voc-1', mime_type => 'audio/ogg', duration => 4, local_path => '/tmp/voice.bin' },
         }
     );
+    like( $prompt, qr/Downloaded Telegram images are attached to this Codex prompt as real image inputs when available\./i, 'codex_session_reply_prompt tells Codex that supported Telegram images are attached as real image inputs' );
+    like( $prompt, qr/Non-image files remain available through the local paths below for tool-based inspection\./i, 'codex_session_reply_prompt distinguishes local-path-only media from real image attachments' );
     like( $prompt, qr/already downloaded locally for this active Codex session/i, 'codex_session_reply_prompt tells Codex that local media paths are already downloaded' );
     like( $prompt, qr/Do not claim the attachment was not downloaded/i, 'codex_session_reply_prompt blocks the old metadata-only excuse when local paths exist' );
     like( $prompt, qr/photo_file_id=photo-1/, 'codex_session_reply_prompt includes inbound photo metadata for Telegram media handling' );
@@ -2050,6 +2052,30 @@ sub new_manager {
     like( $prompt, qr/video_local_path=\/tmp\/video\.bin/, 'codex_session_reply_prompt includes inbound video local path metadata' );
     like( $prompt, qr/voice_file_id=voc-1/, 'codex_session_reply_prompt includes inbound voice metadata' );
     like( $prompt, qr/voice_local_path=\/tmp\/voice\.bin/, 'codex_session_reply_prompt includes inbound voice local path metadata' );
+}
+
+{
+    my $manager = new_manager;
+    my @paths = $manager->codex_session_image_input_paths(
+        {
+            photo    => { local_path => '/tmp/photo-1.jpg' },
+            document => { file_name => 'preview.png', mime_type => 'image/png', local_path => '/tmp/preview.png' },
+            audio    => { local_path => '/tmp/track.mp3' },
+            voice    => { local_path => '/tmp/voice.ogg' },
+        }
+    );
+    is_deeply( \@paths, [ '/tmp/photo-1.jpg', '/tmp/preview.png' ], 'codex_session_image_input_paths returns only photo and image-document local paths' );
+}
+
+{
+    my $manager = new_manager;
+    my @paths = $manager->codex_session_image_input_paths(
+        {
+            document => { file_name => 'Report Final.PDF', mime_type => 'application/pdf', local_path => '/tmp/report.pdf' },
+            video    => { local_path => '/tmp/video.mp4' },
+        }
+    );
+    is_deeply( \@paths, [], 'codex_session_image_input_paths excludes non-image local files' );
 }
 
 {
@@ -2118,6 +2144,9 @@ EOF
             message_id => 14,
             text       => 'hello from telegram',
             chat       => { id => 88, type => 'private' },
+            photo      => { file_id => 'photo-1', local_path => '/tmp/real-photo.jpg' },
+            document   => { file_id => 'doc-1', file_name => 'preview.png', mime_type => 'image/png', local_path => '/tmp/preview.png' },
+            voice      => { file_id => 'voc-1', local_path => '/tmp/voice.ogg' },
         }
     );
     is( $reply, 'Live Codex Telegram reply.', 'codex_session_reply_for_update uses the real codex exec resume path and trims the generated reply text' );
@@ -2127,6 +2156,9 @@ EOF
         <$fh>;
     };
     like( $args, qr/^exec\n--dangerously-bypass-approvals-and-sandbox\nresume\n--skip-git-repo-check\n--output-last-message\n/m, 'codex_session_reply_for_update invokes codex exec resume with the bypass flag and output capture file' );
+    like( $args, qr/\n-i\n\/tmp\/real-photo\.jpg\n/s, 'codex_session_reply_for_update attaches Telegram photo local paths as real image inputs to codex exec resume' );
+    like( $args, qr/\n-i\n\/tmp\/preview\.png\n/s, 'codex_session_reply_for_update attaches image documents as real image inputs to codex exec resume' );
+    unlike( $args, qr/\n-i\n\/tmp\/voice\.ogg\n/s, 'codex_session_reply_for_update does not pass non-image media as fake image inputs' );
     like( $args, qr/session-real-resume/, 'codex_session_reply_for_update targets the managed session id when it runs the real codex binary' );
 }
 

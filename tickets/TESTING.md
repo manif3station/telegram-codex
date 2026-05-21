@@ -15,6 +15,17 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-296`:
+  - `Files=6, Tests=405`
+  - `Result: PASS`
+- Docker covered gate for `DD-296`:
+  - `Files=6, Tests=405`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Real image-input regressions:
+  - downloaded Telegram photos are now attached to resumed Codex replies as real `codex exec resume -i` image inputs
+  - downloaded Telegram image documents are also attached as real image inputs when their MIME type or filename proves they are images
+  - non-image binary media stays on the local-path prompt contract and is no longer described as if the current skill passes those bytes directly into the model
 - Docker functional gate for `DD-295`:
   - `Files=6, Tests=398`
   - `Result: PASS`

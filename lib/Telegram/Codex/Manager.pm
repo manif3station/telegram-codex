@@ -1433,6 +1433,7 @@ sub run_codex_session_resume {
     make_path( $self->listener_paths->{runtime_dir} ) if !-d $self->listener_paths->{runtime_dir};
     my ( $fh, $output_file ) = tempfile( 'telegram-codex-reply-XXXX', DIR => $self->listener_paths->{runtime_dir}, SUFFIX => '.txt' );
     close $fh or die "Unable to close $output_file: $!";
+    my @image_inputs = $self->codex_session_image_input_paths($summary);
     my @command = (
         $real_codex_bin,
         'exec',
@@ -1441,6 +1442,7 @@ sub run_codex_session_resume {
         '--skip-git-repo-check',
         '--output-last-message',
         $output_file,
+        ( map { ( '-i', $_ ) } @image_inputs ),
         $session_id,
         $prompt,
     );
@@ -1673,8 +1675,9 @@ sub codex_session_reply_prompt {
         'Reply as this Codex session, using the current conversation context.',
         'Return only the exact Telegram reply text. No markdown fences. No explanations. No tool narration.',
         'Do not prepend greetings, acknowledgements, or status prefaces unless the user explicitly asked for them. Start with the answer or result.',
+        'Downloaded Telegram images are attached to this Codex prompt as real image inputs when available.',
         'Any *_local_path values below are already downloaded locally for this active Codex session.',
-        'Inspect those local files directly when needed before replying.',
+        'Non-image files remain available through the local paths below for tool-based inspection.',
         'Do not claim the attachment was not downloaded when a *_local_path value is present.',
         'For an outbound file reply, return directive lines instead of plain prose:',
         'telegram_attachment_type=photo|audio|document',
@@ -1773,6 +1776,28 @@ sub telegram_media_prompt_lines {
         push @lines, 'voice_local_path=' . ( $summary->{voice}{local_path} || q{} ) if $summary->{voice}{local_path};
     }
     return @lines;
+}
+
+sub codex_session_image_input_paths {
+    my ( $self, $summary ) = @_;
+    return () if !$summary || ref($summary) ne 'HASH';
+    my @paths;
+    push @paths, $summary->{photo}{local_path}
+      if $summary->{photo} && $summary->{photo}{local_path};
+    if ( $summary->{document} && $summary->{document}{local_path} && $self->telegram_document_is_image( $summary->{document} ) ) {
+        push @paths, $summary->{document}{local_path};
+    }
+    my %seen;
+    return grep { defined $_ && $_ ne q{} && !$seen{$_}++ } @paths;
+}
+
+sub telegram_document_is_image {
+    my ( $self, $document ) = @_;
+    return 0 if !$document || ref($document) ne 'HASH';
+    my $mime = defined $document->{mime_type} ? lc $document->{mime_type} : q{};
+    return 1 if $mime =~ m{\Aimage/};
+    my $name = defined $document->{file_name} ? lc $document->{file_name} : q{};
+    return $name =~ /\.(?:png|jpe?g|webp|gif|bmp|tiff?)\z/ ? 1 : 0;
 }
 
 sub write_codex_target_session_id {
