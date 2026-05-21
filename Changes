@@ -1,3 +1,10 @@
+0.25 2026-05-21
+    - changed the top-level `dashboard telegram-codex.start --version` CLI
+      output from JSON to a raw semver line so DD launcher checks can parse it
+      correctly
+    - kept the start-version path side-effect free so version probes still do
+      not create or restart collectors
+
 0.24 2026-05-21
     - made `dashboard telegram-codex.start --version` a side-effect-free
       version query so DD launcher probes no longer create or restart managed

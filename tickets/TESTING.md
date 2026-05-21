@@ -15,6 +15,12 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-293`:
+  - `Files=6, Tests=385`
+  - `Result: PASS`
+- Start-version CLI contract regressions:
+  - `dashboard telegram-codex.start --version` now prints the raw semver line DD launcher checks expect instead of JSON
+  - the `--version` CLI path remains side-effect free and does not create or restart collectors
 - Docker functional gate for `DD-292`:
   - `Files=6, Tests=386`
   - `Result: PASS`

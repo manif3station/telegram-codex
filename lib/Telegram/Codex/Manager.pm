@@ -60,6 +60,10 @@ sub _run_main {
     my ( $class, $mode, @argv ) = @_;
     my $self = ref($class) ? $class : $class->new;
     my $code = eval {
+        if ( $mode eq 'start' && @argv && ( $argv[0] eq '--version' || $argv[0] eq '-V' || $argv[0] eq 'version' ) ) {
+            print { $self->{stdout_fh} } ( $self->env_value('VERSION') || '0.00' ) . "\n";
+            return 0;
+        }
         my $method = "execute_$mode";
         my $result = $self->$method(@argv);
         print { $self->{stdout_fh} } $self->encode_pretty_json($result) . "\n";
@@ -1810,7 +1814,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/0.24',
+        agent   => 'telegram-codex/0.25',
         timeout => 60,
     );
     return $ua;

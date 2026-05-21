@@ -253,8 +253,7 @@ sub capture_run {
     );
     is( $rc, 0, 'main_start --version succeeds' );
     is( $stderr, q{}, 'main_start --version leaves stderr empty' );
-    is( decode_json($stdout)->{action}, 'version', 'main_start --version prints version metadata instead of running startup side effects' );
-    is( decode_json($stdout)->{version}, '0.24', 'main_start --version reports the skill version' );
+    is( $stdout, "0.24\n", 'main_start --version prints the raw skill version DD expects' );
 }
 
 {
