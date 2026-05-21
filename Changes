@@ -1,3 +1,9 @@
+0.29 2026-05-21
+    - replaced the placeholder Telegram progress heartbeat with real
+      step-by-step verbose streaming from `codex exec resume --json`
+    - streamed agent messages and command execution events into one preserved
+      Telegram trace while keeping `typing...` active until final delivery
+
 0.28 2026-05-21
     - attached downloaded Telegram photos and image documents to resumed
       Codex replies as real `codex exec resume -i` image inputs instead of

@@ -15,6 +15,17 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-297`:
+  - `Files=6, Tests=429`
+  - `Result: PASS`
+- Docker covered gate for `DD-297`:
+  - `Files=6, Tests=429`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Verbose progress-streaming regressions:
+  - the managed Telegram path now streams real `codex exec resume --json` agent and command events into a preserved Telegram trace message
+  - the placeholder `Codex is still working on your request...` heartbeat is no longer used in the active managed reply path
+  - Telegram `typing...` still remains active until the final outbound reply send attempt completes
 - Docker functional gate for `DD-296`:
   - `Files=6, Tests=405`
   - `Result: PASS`

@@ -421,17 +421,33 @@ sub execute_check_messages {
             if ( defined $chat_id && $self->update_needs_listener_reply($summary) ) {
                 my $sent = eval {
                     my $runner = sub {
+                        my $reporter = $reply_mode eq 'codex-session'
+                          ? $self->start_listener_verbose_reporter($summary)
+                          : undef;
                         my $reply_message = $self->listener_reply_message_for_update(
                             $summary,
                             $reply_text,
                             $reply_mode,
+                            (
+                                $reporter
+                                ? (
+                                    on_progress => sub {
+                                        my ($line) = @_;
+                                        $reporter->{emit}->($line);
+                                    },
+                                  )
+                                : ()
+                            ),
                         );
                         return 0 if !defined $reply_message || $reply_message eq q{};
+                        $reporter->{emit}->('Sending final reply to Telegram') if $reporter;
                         $self->dispatch_listener_reply(
                             chat_id             => $chat_id,
                             reply_to_message_id => $message->{message_id},
                             reply_message       => $reply_message,
                         );
+                        $reporter->{emit}->('Final reply sent') if $reporter;
+                        $reporter->{finish}->() if $reporter;
                         return 1;
                     };
                     if ( $reply_mode eq 'codex-session' ) {
@@ -1403,30 +1419,32 @@ sub listener_should_send_typing {
 sub listener_reply_message_for_update {
     my ( $self, $summary, $reply_text, $mode, %args ) = @_;
     $mode = $self->listener_reply_mode_for_update($reply_text) if !defined $mode || $mode eq q{};
-    return $self->codex_session_reply_for_update($summary) if $mode eq 'codex-session';
+    return $self->codex_session_reply_for_update( $summary, %args ) if $mode eq 'codex-session';
     return $reply_text;
 }
 
 sub codex_session_reply_for_update {
-    my ( $self, $summary ) = @_;
+    my ( $self, $summary, %args ) = @_;
     my $session_id = $self->resolve_codex_reply_session_id;
     my $prompt = $self->codex_session_reply_prompt($summary);
     my $needs_completion = $self->telegram_message_requires_completion($summary);
-    my $reply = $self->run_codex_session_resume( $session_id, $prompt, $summary );
+    my $reply = $self->run_codex_session_resume( $session_id, $prompt, $summary, %args );
     if ( $needs_completion && $self->telegram_reply_is_promise_placeholder($reply) ) {
         $reply = $self->run_codex_session_resume(
             $session_id,
             $self->codex_session_retry_prompt( $summary, $reply ),
             $summary,
+            %args,
         );
     }
     return $reply;
 }
 
 sub run_codex_session_resume {
-    my ( $self, $session_id, $prompt, $summary ) = @_;
+    my ( $self, $session_id, $prompt, $summary, %args ) = @_;
+    my $on_progress = $args{on_progress};
     if ( $self->{codex_resume_runner} ) {
-        return $self->{codex_resume_runner}->( $session_id, $prompt, $summary );
+        return $self->{codex_resume_runner}->( $session_id, $prompt, $summary, \%args );
     }
     my $paths = $self->codex_launcher_paths;
     my $real_codex_bin = $self->resolve_real_codex_bin($paths);
@@ -1440,13 +1458,25 @@ sub run_codex_session_resume {
         '--dangerously-bypass-approvals-and-sandbox',
         'resume',
         '--skip-git-repo-check',
+        '--json',
         '--output-last-message',
         $output_file,
         ( map { ( '-i', $_ ) } @image_inputs ),
         $session_id,
         $prompt,
     );
-    my $exit = system(@command);
+    open my $json_fh, '-|', @command or die "Unable to exec $real_codex_bin: $!";
+    while ( my $line = <$json_fh> ) {
+        chomp $line;
+        next if !defined $line || $line eq q{};
+        my $event = eval { decode_json($line) };
+        next if $@ || ref($event) ne 'HASH';
+        next if !$on_progress;
+        my @lines = $self->codex_progress_lines_for_event($event);
+        $on_progress->($_) for @lines;
+    }
+    close $json_fh;
+    my $exit = $?;
     die "Codex resume failed for Telegram reply\n" if $exit == -1 || ( $exit >> 8 ) != 0;
     my $reply = $self->read_text_file($output_file);
     unlink $output_file;
@@ -1468,12 +1498,10 @@ sub with_listener_typing_status {
     my $typing_errors = $args{typing_errors} || [];
     my $code = $args{code};
     my $guard;
-    my $progress_guard;
     if ( $self->listener_should_send_typing( $summary, 'codex-session' ) ) {
         my $error = $self->send_listener_typing_action($summary);
         push @{$typing_errors}, $error if $error;
         $guard = $self->start_listener_typing_guard($summary);
-        $progress_guard = $self->start_listener_progress_guard($summary);
     }
     my $wantarray = wantarray;
     my ( @results, $result );
@@ -1490,13 +1518,6 @@ sub with_listener_typing_status {
         return 1;
     };
     my $error = $@;
-    if ($progress_guard) {
-        my $cleanup_ok = eval {
-            $progress_guard->();
-            return 1;
-        };
-        die $@ if !$cleanup_ok && !$error;
-    }
     if ($guard) {
         my $cleanup_ok = eval {
             $guard->();
@@ -1662,6 +1683,98 @@ sub listener_progress_text {
 sub listener_progress_interval_seconds {
     my ($self) = @_;
     return 5;
+}
+
+sub start_listener_verbose_reporter {
+    my ( $self, $summary ) = @_;
+    return undef if !$self->listener_should_send_typing( $summary, 'codex-session' );
+    return undef if !defined $summary->{chat} || !defined $summary->{chat}{id};
+    return undef if !defined $summary->{message_id};
+    my $chat_id = $summary->{chat}{id};
+    my $reply_to_message_id = $summary->{message_id};
+    my @lines;
+    my $message_id;
+    my $emit = sub {
+        my ($line) = @_;
+        return 1 if !defined $line || $line eq q{};
+        push @lines, $line if !@lines || $lines[-1] ne $line;
+        @lines = $self->listener_verbose_trimmed_lines(@lines);
+        my $text = $self->listener_verbose_text(@lines);
+        if ( !defined $message_id ) {
+            my $sent = $self->telegram_post(
+                'sendMessage',
+                {
+                    chat_id             => $chat_id,
+                    reply_to_message_id => $reply_to_message_id,
+                    text                => $text,
+                }
+            );
+            $message_id = $sent->{result}{message_id} if $sent && ref($sent) eq 'HASH' && $sent->{result};
+            return 1;
+        }
+        $self->telegram_post(
+            'editMessageText',
+            {
+                chat_id    => $chat_id,
+                message_id => $message_id,
+                text       => $text,
+            }
+        );
+        return 1;
+    };
+    return {
+        emit   => $emit,
+        finish => sub { return 1; },
+    };
+}
+
+sub listener_verbose_trimmed_lines {
+    my ( $self, @lines ) = @_;
+    my $max_lines = 12;
+    @lines = @lines[ -$max_lines .. -1 ] if @lines > $max_lines;
+    while (@lines) {
+        my $text = $self->listener_verbose_text(@lines);
+        last if length($text) <= 3500;
+        shift @lines;
+    }
+    return @lines;
+}
+
+sub listener_verbose_text {
+    my ( $self, @lines ) = @_;
+    my @body = map { '- ' . $_ } @lines;
+    return join "\n", 'Codex verbose', @body;
+}
+
+sub codex_progress_lines_for_event {
+    my ( $self, $event ) = @_;
+    return () if !$event || ref($event) ne 'HASH';
+    my $type = $event->{type} || q{};
+    return ('Turn started') if $type eq 'turn.started';
+    return ('Turn completed') if $type eq 'turn.completed';
+    return () if $type !~ /\Aitem\.(?:started|completed)\z/;
+    my $item = $event->{item} || {};
+    my $item_type = $item->{type} || q{};
+    if ( $item_type eq 'agent_message' && $type eq 'item.completed' ) {
+        my $text = $item->{text} || q{};
+        $text =~ s/\r//g;
+        my @lines = grep { defined $_ && $_ ne q{} } split /\n+/, $text;
+        return map { 'Agent: ' . $_ } @lines;
+    }
+    if ( $item_type eq 'command_execution' ) {
+        my $command = $item->{command} || q{};
+        if ( $type eq 'item.started' ) {
+            return ( 'Running command: ' . $command );
+        }
+        my @lines = ( 'Command finished (exit ' . ( defined $item->{exit_code} ? $item->{exit_code} : '?' ) . '): ' . $command );
+        my $output = $item->{aggregated_output} || q{};
+        $output =~ s/\r//g;
+        my @output_lines = grep { defined $_ && $_ ne q{} } split /\n+/, $output;
+        splice @output_lines, 4 if @output_lines > 4;
+        push @lines, map { 'Output: ' . $_ } @output_lines;
+        return @lines;
+    }
+    return ();
 }
 
 sub codex_session_reply_prompt {
@@ -1914,7 +2027,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-            agent   => 'telegram-codex/0.27',
+        agent   => 'telegram-codex/' . ( $self->env_value('VERSION') || '0.29' ),
         timeout => 60,
     );
     return $ua;

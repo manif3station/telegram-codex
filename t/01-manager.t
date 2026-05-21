@@ -1294,7 +1294,7 @@ sub new_manager {
     like( $resume_calls[0][1], qr/text=hello2/, 'managed listener mode passes the inbound Telegram text into the Codex reply prompt' );
     is( $post_calls[0][0], 'sendChatAction', 'managed listener mode sends a typing action before the Codex-generated reply' );
     is( $post_calls[0][1]{action}, 'typing', 'managed listener mode uses Telegram typing status while the Codex reply is being generated' );
-    is( $post_calls[1][1]{text}, 'This is a real Codex session reply.', 'managed listener mode sends the Codex-generated reply instead of a placeholder' );
+    is( $post_calls[-2][1]{text}, 'This is a real Codex session reply.', 'managed listener mode sends the Codex-generated reply instead of a placeholder' );
 }
 
 {
@@ -1358,16 +1358,19 @@ sub new_manager {
     like( $resume_calls[0][1], qr/text=Hi/, 'collector-owned check-message passes the inbound text into the Codex reply prompt' );
     is( $post_calls[0][0], 'sendChatAction', 'collector-owned check-message sends a typing action before the reply in managed Codex-session mode' );
     is( $post_calls[0][1]{action}, 'typing', 'collector-owned check-message uses Telegram typing status while Codex is generating the reply' );
-    is( $post_calls[1][0], 'sendMessage', 'collector-owned check-message sends the final Telegram reply after the typing action' );
-    is( $post_calls[1][1]{text}, 'Collector reply from Codex session.', 'collector-owned check-message sends the Codex-generated reply text' );
-    is_deeply( \@typing_events, [ 'guard-start', 'resume', 'send', 'guard-stop' ], 'collector-owned check-message keeps the typing guard alive until the final Telegram reply send finishes' );
+    is( $post_calls[-2][0], 'sendMessage', 'collector-owned check-message sends the final Telegram reply after the typing action' );
+    is( $post_calls[-2][1]{text}, 'Collector reply from Codex session.', 'collector-owned check-message sends the Codex-generated reply text' );
+    is( $typing_events[0], 'guard-start', 'collector-owned check-message starts the typing guard before managed reply work' );
+    is( $typing_events[1], 'resume', 'collector-owned check-message resumes Codex while the typing guard is active' );
+    ok( scalar( grep { $_ eq 'send' } @typing_events ) >= 1, 'collector-owned check-message performs Telegram sends while the typing guard remains active' );
+    is( $typing_events[-1], 'guard-stop', 'collector-owned check-message stops the typing guard after Telegram delivery work finishes' );
 }
 
 {
     my $runtime = tempdir( CLEANUP => 1 );
     my @post_calls;
     my @resume_calls;
-    my @progress_events;
+    my @typing_events;
     my $manager = new_manager(
         cwd  => $runtime,
         home => $runtime,
@@ -1391,13 +1394,19 @@ sub new_manager {
             };
         },
         codex_resume_runner => sub {
-            my ( $session_id, $prompt, $summary ) = @_;
+            my ( $session_id, $prompt, $summary, $opts ) = @_;
             push @resume_calls, [ $session_id, $prompt, $summary ];
+            push @typing_events, 'resume';
+            $opts->{on_progress}->('Turn started') if $opts && $opts->{on_progress};
+            $opts->{on_progress}->('Agent: Planning the next step') if $opts && $opts->{on_progress};
+            $opts->{on_progress}->('Running command: /bin/bash -lc pwd') if $opts && $opts->{on_progress};
+            $opts->{on_progress}->('Command finished (exit 0): /bin/bash -lc pwd') if $opts && $opts->{on_progress};
             return 'Done. Final task result.';
         },
         post_runner => sub {
             my ( $method, $params ) = @_;
             push @post_calls, [ $method, $params ];
+            push @typing_events, 'send' if $method eq 'sendMessage' && ( $params->{text} || q{} ) eq 'Done. Final task result.';
             return {
                 ok     => JSON::XS::true,
                 result => {
@@ -1409,27 +1418,27 @@ sub new_manager {
         },
         typing_guard_runner => sub {
             my ( $summary, $self ) = @_;
-            push @progress_events, 'typing-start';
+            push @typing_events, 'typing-start';
             return sub {
-                push @progress_events, 'typing-stop';
-                return 1;
-            };
-        },
-        progress_guard_runner => sub {
-            my ( $summary, $self ) = @_;
-            push @progress_events, 'progress-start';
-            return sub {
-                push @progress_events, 'progress-stop';
+                push @typing_events, 'typing-stop';
                 return 1;
             };
         },
     );
     $manager->write_codex_target_session_id( 'skills', 'session-from-ledger' );
     my $result = $manager->execute_check_messages( 'skills', 1, 0 );
+    my @texts = map { $_->[1]{text} } grep { $_->[1]{text} } @post_calls;
     is( $result->{processed}, 1, 'task-style collector-owned check-message processes the inbound Telegram task request' );
     is( $result->{replied}, 1, 'task-style collector-owned check-message still sends the final Telegram reply' );
-    is_deeply( \@progress_events, [ 'typing-start', 'progress-start', 'progress-stop', 'typing-stop' ], 'task-style collector-owned check-message keeps both typing and progress guards around the managed Codex work' );
+    is_deeply( \@typing_events, [ 'typing-start', 'resume', 'send', 'typing-stop' ], 'task-style collector-owned check-message keeps typing around the managed Codex work through final delivery' );
     is( scalar @resume_calls, 1, 'task-style collector-owned check-message resumes Codex once when the first reply is substantive' );
+    is( $post_calls[1][0], 'sendMessage', 'task-style collector-owned check-message sends a verbose progress message before the final reply' );
+    like( $post_calls[1][1]{text}, qr/Codex verbose/, 'task-style collector-owned check-message opens the progress stream with a verbose trace message' );
+    ok( scalar( grep { $_->[0] eq 'editMessageText' } @post_calls ) >= 1, 'task-style collector-owned check-message updates the verbose trace in place' );
+    like( join( "\n---\n", @texts ), qr/Agent: Planning the next step/, 'task-style collector-owned check-message streams real agent events into Telegram' );
+    like( join( "\n---\n", @texts ), qr/Running command: \/bin\/bash -lc pwd/, 'task-style collector-owned check-message streams real command-start events into Telegram' );
+    like( join( "\n---\n", @texts ), qr/Final reply sent/, 'task-style collector-owned check-message records final delivery in the verbose trace' );
+    is( $post_calls[-2][1]{text}, 'Done. Final task result.', 'task-style collector-owned check-message still sends the final substantive Telegram reply' );
 }
 
 {
@@ -1698,6 +1707,82 @@ sub new_manager {
     );
     ok( $ran, 'with_listener_typing_status runs the callback body in void context' );
     is( $post_calls[0][0], 'sendChatAction', 'with_listener_typing_status still sends typing in void context' );
+}
+
+{
+    my $manager = new_manager;
+    is_deeply(
+        [ $manager->codex_progress_lines_for_event( { type => 'turn.started' } ) ],
+        ['Turn started'],
+        'codex_progress_lines_for_event formats turn.started'
+    );
+    is_deeply(
+        [ $manager->codex_progress_lines_for_event( { type => 'item.started', item => { type => 'command_execution', command => '/bin/bash -lc pwd' } } ) ],
+        ['Running command: /bin/bash -lc pwd'],
+        'codex_progress_lines_for_event formats command start events'
+    );
+    is_deeply(
+        [ $manager->codex_progress_lines_for_event( { type => 'item.completed', item => { type => 'command_execution', command => '/bin/bash -lc pwd', exit_code => 0, aggregated_output => "/tmp\n" } } ) ],
+        [ 'Command finished (exit 0): /bin/bash -lc pwd', 'Output: /tmp' ],
+        'codex_progress_lines_for_event formats command completion events with output'
+    );
+    is_deeply(
+        [ $manager->codex_progress_lines_for_event( { type => 'item.completed', item => { type => 'agent_message', text => "Planning\nDone" } } ) ],
+        [ 'Agent: Planning', 'Agent: Done' ],
+        'codex_progress_lines_for_event formats agent messages line by line'
+    );
+    is_deeply(
+        [ $manager->codex_progress_lines_for_event( { type => 'item.completed', item => { type => 'unknown' } } ) ],
+        [],
+        'codex_progress_lines_for_event returns no lines for unrelated event payloads'
+    );
+}
+
+{
+    my $manager = new_manager;
+    my @trimmed = $manager->listener_verbose_trimmed_lines( ('short line') x 11, ( 'x' x 3400 ) );
+    ok( scalar(@trimmed) < 12, 'listener_verbose_trimmed_lines drops older lines until the rendered verbose message fits Telegram limits' );
+    is( $trimmed[-1], 'x' x 3400, 'listener_verbose_trimmed_lines keeps the newest line while trimming oversized verbose output' );
+    ok( length( $manager->listener_verbose_text(@trimmed) ) <= 3500, 'listener_verbose_trimmed_lines returns text that fits the Telegram edit budget' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR      => $runtime,
+            TELEGRAM_CODEX_LISTENER_MODE    => 'codex-session',
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-task-work',
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 995, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    my $reporter = $manager->start_listener_verbose_reporter(
+        {
+            update_id  => 30020,
+            message_id => 320,
+            chat       => { id => 88, type => 'private' },
+            text       => 'Finish all tasks with all gates',
+        },
+    );
+    ok( $reporter, 'start_listener_verbose_reporter returns a reporter object for managed Codex-session updates' );
+    ok( $reporter->{emit}->('Turn started'), 'start_listener_verbose_reporter can emit the first verbose line' );
+    ok( $reporter->{emit}->('Running command: /bin/bash -lc pwd'), 'start_listener_verbose_reporter can append later verbose lines' );
+    ok( $reporter->{finish}->(), 'start_listener_verbose_reporter exposes a finish callback' );
+    is( $post_calls[0][0], 'sendMessage', 'start_listener_verbose_reporter sends the first verbose trace message' );
+    like( $post_calls[0][1]{text}, qr/Codex verbose\n- Turn started/, 'start_listener_verbose_reporter renders the initial verbose trace text' );
+    is( $post_calls[1][0], 'editMessageText', 'start_listener_verbose_reporter edits the same Telegram message for later lines' );
+    like( $post_calls[1][1]{text}, qr/Running command: \/bin\/bash -lc pwd/, 'start_listener_verbose_reporter includes later streamed steps in the edited message' );
 }
 
 {
@@ -1980,7 +2065,7 @@ sub new_manager {
     is( scalar @download_calls, 1, 'collector-owned check-message downloads inbound managed media before asking Codex to reply' );
     like( $resume_calls[0][1], qr/photo_local_path=.*update-103.*photo-103\.jpg/, 'collector-owned check-message passes the downloaded photo local path into the Codex reply prompt' );
     like( $resume_calls[0][1], qr/already downloaded locally for this active Codex session/i, 'collector-owned check-message tells Codex the downloaded media is locally available' );
-    is( $post_calls[1][1]{text}, 'Photo processed from local file.', 'collector-owned check-message still sends the Codex-generated text reply after downloading photo media' );
+    is( $post_calls[-2][1]{text}, 'Photo processed from local file.', 'collector-owned check-message still sends the Codex-generated text reply after downloading photo media' );
 }
 
 {
@@ -2123,14 +2208,20 @@ for ARG in "\$@"; do
   PREV="\$ARG"
 done
 printf '%s\n' "\$@" > "$args_file"
+printf '%s\n' '{"type":"turn.started"}'
+printf '%s\n' '{"type":"item.started","item":{"type":"command_execution","command":"/bin/pwd"}}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/pwd","exit_code":0,"aggregated_output":"/tmp\\n"}}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Inspecting the local file"}}'
 printf '  Live Codex Telegram reply.  ' > "\$OUT"
 exit 0
 EOF
     chmod 0755, $real_codex or die "Unable to chmod fake real codex resume binary: $!";
+    my @progress;
     my $manager = new_manager(
         cwd  => $runtime,
         home => $runtime,
         env  => {
+            VERSION                         => '0.29',
             TELEGRAM_BOT_TOKEN              => 'token-xyz',
             TELEGRAM_CODEX_RUNTIME_DIR      => $runtime,
             CODEX_SESSION_ID                => 'session-real-resume',
@@ -2147,7 +2238,8 @@ EOF
             photo      => { file_id => 'photo-1', local_path => '/tmp/real-photo.jpg' },
             document   => { file_id => 'doc-1', file_name => 'preview.png', mime_type => 'image/png', local_path => '/tmp/preview.png' },
             voice      => { file_id => 'voc-1', local_path => '/tmp/voice.ogg' },
-        }
+        },
+        on_progress => sub { push @progress, @_ },
     );
     is( $reply, 'Live Codex Telegram reply.', 'codex_session_reply_for_update uses the real codex exec resume path and trims the generated reply text' );
     my $args = do {
@@ -2155,11 +2247,23 @@ EOF
         local $/;
         <$fh>;
     };
-    like( $args, qr/^exec\n--dangerously-bypass-approvals-and-sandbox\nresume\n--skip-git-repo-check\n--output-last-message\n/m, 'codex_session_reply_for_update invokes codex exec resume with the bypass flag and output capture file' );
+    like( $args, qr/^exec\n--dangerously-bypass-approvals-and-sandbox\nresume\n--skip-git-repo-check\n--json\n--output-last-message\n/m, 'codex_session_reply_for_update invokes codex exec resume with the bypass flag, json stream, and output capture file' );
     like( $args, qr/\n-i\n\/tmp\/real-photo\.jpg\n/s, 'codex_session_reply_for_update attaches Telegram photo local paths as real image inputs to codex exec resume' );
     like( $args, qr/\n-i\n\/tmp\/preview\.png\n/s, 'codex_session_reply_for_update attaches image documents as real image inputs to codex exec resume' );
     unlike( $args, qr/\n-i\n\/tmp\/voice\.ogg\n/s, 'codex_session_reply_for_update does not pass non-image media as fake image inputs' );
     like( $args, qr/session-real-resume/, 'codex_session_reply_for_update targets the managed session id when it runs the real codex binary' );
+    is_deeply(
+        \@progress,
+        [
+            'Turn started',
+            'Running command: /bin/pwd',
+            'Command finished (exit 0): /bin/pwd',
+            'Output: /tmp',
+            'Agent: Inspecting the local file',
+        ],
+        'codex_session_reply_for_update streams real codex json events through the progress callback',
+    );
+    like( $manager->{ua}->agent, qr/\Atelegram-codex\/0\.29\z/, 'manager user agent tracks the current skill version' );
 }
 
 {
