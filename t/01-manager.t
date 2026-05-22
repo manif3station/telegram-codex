@@ -843,7 +843,7 @@ sub new_manager {
         local $/;
         <$fh>;
     };
-    is( $args, "workspace-start-live\nworkspace-start-live\n--search\n", 'execute_start exports the workspace session id into the launched Codex process' );
+    is( $args, "workspace-start-live\nworkspace-start-live\n--dangerously-bypass-approvals-and-sandbox\n--search\n", 'execute_start exports the workspace session id and the managed bypass flag into the launched Codex process' );
 }
 
 {
@@ -1164,7 +1164,7 @@ sub new_manager {
         local $/;
         <$fh>;
     };
-    is( $args, "--search\n", 'execute_start forwards direct codex args to the real codex binary' );
+    is( $args, "--dangerously-bypass-approvals-and-sandbox\n--search\n", 'execute_start prepends the bypass flag before forwarding direct codex args to the real codex binary' );
 }
 
 {
@@ -1215,7 +1215,7 @@ sub new_manager {
         local $/;
         <$fh>;
     };
-    is( $args, "--search\n", 'execute_start does not route through Ollama just because the workspace exports OLLAMA_MODEL' );
+    is( $args, "--dangerously-bypass-approvals-and-sandbox\n--search\n", 'execute_start still prepends the bypass flag when ambient OLLAMA_MODEL is ignored' );
 }
 
 {
@@ -1247,7 +1247,7 @@ sub new_manager {
         local $/;
         <$fh>;
     };
-    is( $args, "--profile\nollama-launch\n-m\nqwen3.5:397b-cloud\nresume\nsession-x\n", 'execute_start injects the explicit Ollama Codex profile args directly into the real Codex exec path' );
+    is( $args, "--profile\nollama-launch\n-m\nqwen3.5:397b-cloud\n--dangerously-bypass-approvals-and-sandbox\nresume\nsession-x\n", 'execute_start injects the explicit Ollama Codex profile args and the bypass flag into the real Codex exec path' );
 }
 
 {
@@ -1262,6 +1262,37 @@ sub new_manager {
         [ '--profile', 'ollama-launch', '-m', 'llama3.3:70b', 'resume', 'session-x' ],
         'inject_ollama_codex_args does not prepend another Ollama profile when the argv already targets the Ollama launch profile',
     );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $bin_dir = File::Spec->catdir( $home, 'bin' );
+    make_path($bin_dir);
+    my $args_file = File::Spec->catfile( $home, 'idempotent-bypass.args' );
+    my $real_codex = File::Spec->catfile( $bin_dir, 'codex-real' );
+    _write( $real_codex, "#!/bin/sh\nprintf '%s\\n' \"\$@\" > \"$args_file\"\nexit 0\n" );
+    chmod 0755, $real_codex or die "Unable to chmod fake real codex idempotent target: $!";
+    my $pid = fork();
+    die "Unable to fork execute_start idempotent bypass test: $!" if !defined $pid;
+    if ( !$pid ) {
+        my $manager = new_manager(
+            cwd  => $home,
+            home => $home,
+            env  => {
+                CODEX_REAL_BIN => $real_codex,
+            },
+        );
+        $manager->execute_start('--dangerously-bypass-approvals-and-sandbox', '--search');
+        exit 93;
+    }
+    waitpid $pid, 0;
+    is( $? >> 8, 0, 'execute_start leaves an already-present bypass flag idempotent' );
+    my $args = do {
+        open my $fh, '<', $args_file or die $!;
+        local $/;
+        <$fh>;
+    };
+    is( $args, "--dangerously-bypass-approvals-and-sandbox\n--search\n", 'execute_start does not duplicate the bypass flag when it is already present on the managed Codex argv' );
 }
 
 {

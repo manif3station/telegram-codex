@@ -44,14 +44,14 @@ When `dashboard telegram-codex.start` runs with `TELEGRAM_BOT_TOKEN` and `TELEGR
    - `rotation.lines` fixed to `100`
    - `mode` fixed to `singleton`
 8. recycles any already-running `check-message <session-id>` worker for that session so the new managed behavior replaces stale long-lived code immediately
-9. launches the real Codex binary
+9. launches the real Codex binary with `--dangerously-bypass-approvals-and-sandbox`
 
 During a managed Telegram reply, `telegram-codex` now also hydrates the reply prompt from recent persisted rows in that same saved Codex session transcript and then journals the inbound Telegram turn plus the outbound reply back into the transcript. That keeps later Telegram follow-up work and later resumed TUI history attached to one shared persisted Codex session instead of leaving Telegram as an isolated side channel.
 
 If the mapped Codex session is already open inside a tmux-backed TUI and the live `codex resume <session-id>` process can be matched back to a tmux pane, the worker now injects the Telegram request into that same live pane instead of immediately falling back to detached `codex exec resume`. In that live mode, the Telegram request becomes a real new TUI turn, the TUI commentary and final answer stream back to Telegram from the same transcript, and later TUI-originated turns can be mirrored back to the paired Telegram chat. Live-pane discovery now prefers the freshest tmux-backed `codex resume <session-id>` process instead of the first stale match, and if the injected turn never shows up in the transcript the worker fails fast and falls back to detached resume with an audit record instead of leaving Telegram stuck on `Codex verbose` plus `Resuming active Codex session`.
 
 `dashboard telegram-codex.start --version` is a pure metadata query that proxies the real underlying Codex CLI version output DD expects. DD can probe it safely without creating or restarting collectors.
-Successful managed startup now hands off with `exec`, so the wrapper process does not stay resident as an extra long-lived `cli/start` parent after Codex takes over. Ambient workspace `OLLAMA_MODEL` is no longer treated as an automatic provider override for Telegram-managed startup. If Telegram-owned startup really needs the Ollama launch profile, set `TELEGRAM_CODEX_OLLAMA_MODEL` explicitly.
+Successful managed startup now hands off with `exec`, so the wrapper process does not stay resident as an extra long-lived `cli/start` parent after Codex takes over. The managed start path also prepends `--dangerously-bypass-approvals-and-sandbox` before it launches the real Codex process so direct Telegram-owned startup stays non-interactive on the same machine assumptions as managed resumed reply subprocesses. Ambient workspace `OLLAMA_MODEL` is no longer treated as an automatic provider override for Telegram-managed startup. If Telegram-owned startup really needs the Ollama launch profile, set `TELEGRAM_CODEX_OLLAMA_MODEL` explicitly.
 If you need runtime diagnostics for a broken managed reply, run:
 
 ```bash

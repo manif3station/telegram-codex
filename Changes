@@ -1,3 +1,11 @@
+0.41 2026-05-22
+    - made the managed `dashboard telegram-codex.start` launch path prepend
+      `--dangerously-bypass-approvals-and-sandbox` before it hands off to
+      the real Codex binary
+    - kept the managed start argv idempotent so an already-present bypass
+      flag is not duplicated and the explicit Telegram-owned Ollama launch
+      profile preserves the same non-interactive Codex flag
+
 0.40 2026-05-22
     - moved the Telegram pairing decision ahead of reply-mode selection and
       media hydration so an unpaired trigger message cannot enter any

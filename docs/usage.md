@@ -107,10 +107,10 @@ dashboard restart collector telegram-codex-<session-id>
 ```
 
 8. recycles any already-running `dashboard telegram-codex.check-message <session-id>` worker for that same session
-9. launches the real Codex binary
+9. launches the real Codex binary with `--dangerously-bypass-approvals-and-sandbox`
 
 `dashboard telegram-codex.start --version` is intentionally side-effect free and proxies the real Codex CLI version output DD launcher checks expect, so DD command-family discovery can probe it without touching collectors.
-On a real startup, the launcher now uses `exec` for real Codex handoff, so a successful run does not leave an extra resident `cli/start` wrapper process behind.
+On a real startup, the launcher now uses `exec` for real Codex handoff, so a successful run does not leave an extra resident `cli/start` wrapper process behind. The managed start path also prepends `--dangerously-bypass-approvals-and-sandbox` before that handoff so direct Telegram-owned startup stays non-interactive on the same machine assumptions as managed resumed reply subprocesses.
 Ambient workspace `OLLAMA_MODEL` is ignored by Telegram-managed startup. If you intentionally want Telegram-managed startup to inject the Ollama launch profile, set `TELEGRAM_CODEX_OLLAMA_MODEL` explicitly.
 If you need managed-reply runtime diagnostics, start with:
 

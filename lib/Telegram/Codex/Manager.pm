@@ -187,6 +187,8 @@ sub execute_start {
     }
 
     my @codex_args = @{ $plan->{codex_args} };
+    unshift @codex_args, '--dangerously-bypass-approvals-and-sandbox'
+      if !grep { defined $_ && $_ eq '--dangerously-bypass-approvals-and-sandbox' } @codex_args;
     if ( my $ollama_model = $self->explicit_start_ollama_model ) {
         @codex_args = $self->inject_ollama_codex_args( $ollama_model, @codex_args );
     }

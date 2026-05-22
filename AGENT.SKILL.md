@@ -46,10 +46,10 @@ dashboard restart collector telegram-codex-<session-id>
 ```
 
 7. recycles any already-running `check-message <session-id>` worker for that same session so stale long-lived code does not stay active
-8. launches the real Codex binary
+8. launches the real Codex binary with `--dangerously-bypass-approvals-and-sandbox`
 
 `dashboard telegram-codex.start --version` is a safe metadata query for DD probe/discovery paths, must not create or restart collectors, and proxies the real underlying Codex CLI version output the DD launcher expects.
-Successful managed startup now hands off with `exec`, so the wrapper process should not remain as an extra long-lived `cli/start` parent once Codex is running. Ambient workspace `OLLAMA_MODEL` is intentionally ignored here; use `TELEGRAM_CODEX_OLLAMA_MODEL` only when Telegram-managed startup should explicitly inject the Ollama launch profile.
+Successful managed startup now hands off with `exec`, so the wrapper process should not remain as an extra long-lived `cli/start` parent once Codex is running. The managed start argv also prepends `--dangerously-bypass-approvals-and-sandbox` before the real Codex handoff so direct Telegram-owned startup keeps the same non-interactive execution contract as managed resumed reply subprocesses. Ambient workspace `OLLAMA_MODEL` is intentionally ignored here; use `TELEGRAM_CODEX_OLLAMA_MODEL` only when Telegram-managed startup should explicitly inject the Ollama launch profile.
 If the managed reply path is cutting off mid-operation, use:
 
 ```bash
