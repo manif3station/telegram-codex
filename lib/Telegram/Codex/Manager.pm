@@ -1814,11 +1814,28 @@ sub codex_session_reply_for_update {
     my $session_id = $self->resolve_codex_reply_session_id;
     my $live_pane = $self->resolve_codex_live_tmux_pane($session_id);
     if ( defined $live_pane && $live_pane ne q{} ) {
-        return $self->run_codex_session_live_pane(
-            $session_id,
-            $live_pane,
-            $summary,
-            %args,
+        my $reply = eval {
+            return $self->run_codex_session_live_pane(
+                $session_id,
+                $live_pane,
+                $summary,
+                %args,
+            );
+        };
+        if ( defined $reply && !$@ ) {
+            return $reply;
+        }
+        my $error = $@;
+        chomp $error;
+        $error ||= 'Live Codex pane reply failed';
+        $self->append_listener_audit_event(
+            $self->listener_paths,
+            'codex.live_pane.fallback',
+            {
+                session_id => $session_id,
+                pane_id    => $live_pane,
+                error      => $error,
+            },
         );
     }
     my $prompt = $self->codex_session_reply_prompt($summary);
@@ -1856,14 +1873,26 @@ sub run_codex_session_live_pane {
     );
 
     my $saw_user = 0;
+    my $matched_user_text;
+    my $user_wait_cycles = 0;
     my %seen_progress;
     for ( 1 .. 600 ) {
         my ( $next_cursor, @events ) = $self->codex_session_transcript_events_since( $transcript_path, $cursor );
         $cursor = $next_cursor;
         for my $event (@events) {
             if ( !$saw_user ) {
-                if ( $event->{role} eq 'user' && $event->{text} eq $prompt ) {
+                if ( $event->{role} eq 'user' && $self->codex_live_pane_user_event_matches_prompt( $summary, $prompt, $event->{text} ) ) {
                     $saw_user = 1;
+                    $matched_user_text = $event->{text};
+                    $self->append_listener_audit_event(
+                        $paths,
+                        'codex.live_pane.user_seen',
+                        {
+                            session_id => $session_id,
+                            pane_id    => $pane_id,
+                            user_text  => $matched_user_text,
+                        },
+                    );
                 }
                 next;
             }
@@ -1903,6 +1932,12 @@ sub run_codex_session_live_pane {
                     },
                 );
                 return $event->{text};
+            }
+        }
+        if ( !$saw_user ) {
+            $user_wait_cycles++;
+            if ( $user_wait_cycles >= 15 ) {
+                die "Live Codex pane never recorded the injected Telegram turn\n";
             }
         }
         $self->listener_pause_seconds(1);
@@ -2033,21 +2068,36 @@ sub resolve_codex_reply_session_id {
 
 sub resolve_codex_live_tmux_pane {
     my ( $self, $session_id ) = @_;
-    return undef if !defined $session_id || $session_id eq q{};
-    my $tty = $self->discover_codex_session_tty($session_id);
-    return undef if !defined $tty || $tty eq q{};
-    return $self->discover_tmux_pane_for_tty($tty);
+    my $match = $self->best_codex_live_tmux_match($session_id);
+    return !$match ? undef : $match->{pane_id};
 }
 
 sub discover_codex_session_tty {
     my ( $self, $session_id ) = @_;
+    my $match = $self->best_codex_live_tmux_match($session_id);
+    return !$match ? undef : $match->{tty};
+}
+
+sub best_codex_live_tmux_match {
+    my ( $self, $session_id ) = @_;
     return undef if !defined $session_id || $session_id eq q{};
-    my @rows = $self->codex_process_rows;
+    my @rows = sort {
+        ( $a->{etimes} // 1_000_000_000 ) <=> ( $b->{etimes} // 1_000_000_000 )
+          || $b->{pid} <=> $a->{pid}
+    } $self->codex_process_rows;
     for my $row (@rows) {
         next if !$row->{cmd} || $row->{cmd} !~ /\bcodex\b/;
         next if $row->{cmd} !~ /\bresume\s+\Q$session_id\E(?:\s|\z)/;
         next if !$row->{tty} || $row->{tty} eq '?';
-        return $row->{tty};
+        my $pane_id = $self->discover_tmux_pane_for_tty( $row->{tty} );
+        next if !defined $pane_id || $pane_id eq q{};
+        return {
+            pid     => $row->{pid},
+            tty     => $row->{tty},
+            pane_id => $pane_id,
+            etimes  => $row->{etimes},
+            cmd     => $row->{cmd},
+        };
     }
     return undef;
 }
@@ -2057,17 +2107,18 @@ sub codex_process_rows {
     if ( $self->{process_list_runner} ) {
         return @{ $self->{process_list_runner}->() || [] };
     }
-    open my $fh, '-|', 'ps', '-eo', 'pid=,tty=,args='
+    open my $fh, '-|', 'ps', '-eo', 'pid=,tty=,etimes=,args='
       or die "Unable to run ps for codex process discovery: $!";
     my @rows;
     while ( my $line = <$fh> ) {
         chomp $line;
         next if !defined $line || $line eq q{};
-        my ( $pid, $tty, $cmd ) = $line =~ /\A\s*(\d+)\s+(\S+)\s+(.*)\z/;
+        my ( $pid, $tty, $etimes, $cmd ) = $line =~ /\A\s*(\d+)\s+(\S+)\s+(\d+)\s+(.*)\z/;
         next if !defined $pid;
         push @rows, {
             pid => 0 + $pid,
             tty => $tty,
+            etimes => defined $etimes ? 0 + $etimes : undef,
             cmd => $cmd,
         };
     }
@@ -2134,6 +2185,26 @@ sub codex_live_pane_prompt {
         push @lines, @media;
     }
     return join "\n", @lines;
+}
+
+sub codex_live_pane_user_event_matches_prompt {
+    my ( $self, $summary, $prompt, $event_text ) = @_;
+    return 0 if !defined $event_text || $event_text eq q{};
+    return 1 if $event_text eq $prompt;
+    my $normalized_prompt = $prompt;
+    my $normalized_event  = $event_text;
+    $normalized_prompt =~ s/\s+/ /g;
+    $normalized_prompt =~ s/\A\s+//;
+    $normalized_prompt =~ s/\s+\z//;
+    $normalized_event =~ s/\s+/ /g;
+    $normalized_event =~ s/\A\s+//;
+    $normalized_event =~ s/\s+\z//;
+    return 1 if $normalized_event eq $normalized_prompt;
+    my $text = defined $summary->{text} ? $summary->{text} : q{};
+    my $caption = defined $summary->{caption} ? $summary->{caption} : q{};
+    return 1 if $text ne q{} && index( $normalized_event, $text ) >= 0;
+    return 1 if $caption ne q{} && index( $normalized_event, $caption ) >= 0;
+    return 0;
 }
 
 sub codex_session_transcript_size {

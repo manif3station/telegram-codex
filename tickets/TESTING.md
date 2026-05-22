@@ -15,6 +15,18 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-307`:
+  - `Files=6, Tests=601`
+  - `Result: PASS`
+- Docker covered gate for `DD-307`:
+  - `Files=6, Tests=601`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Live-pane fallback regressions:
+  - live-pane discovery now prefers the freshest tmux-backed `codex resume <session-id>` process instead of the first stale match
+  - if the injected Telegram turn never appears in the live transcript, the worker fails fast and records `codex.live_pane.fallback` before retrying through detached resume
+  - if the live transcript records the injected user turn but never delivers a final assistant answer, the worker times out explicitly and that timeout path is covered directly
+  - helper coverage now proves text matches, caption-only matches, wrapped Telegram rows, and unrelated transcript-row rejection in the live-pane prompt matcher
 - Docker functional gate for `DD-306`:
   - `Files=6, Tests=585`
   - `Result: PASS`

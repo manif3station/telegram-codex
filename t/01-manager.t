@@ -4208,6 +4208,68 @@ EOF
 {
     my $home = tempdir( CLEANUP => 1 );
     my $cwd = tempdir( CLEANUP => 1 );
+    my $session_id = '019e-live-fallback';
+    my $runtime_dir = File::Spec->catdir( $home, '.telegram-codex', 'skills' );
+    my $session_dir = File::Spec->catdir( $home, '.codex', 'sessions', '2026', '05', '22' );
+    make_path($runtime_dir);
+    make_path($session_dir);
+    my $session_file = File::Spec->catfile( $session_dir, "rollout-2026-05-22T18-31-00-$session_id.jsonl" );
+    _write( $session_file, q{} );
+    my @resume_calls;
+    my @sleep_calls;
+    my $manager = new_manager(
+        cwd  => $cwd,
+        home => $home,
+        env  => {
+            TELEGRAM_CODEX_SESSION_ID        => 'skills',
+            TELEGRAM_CODEX_TARGET_SESSION_ID => $session_id,
+            TELEGRAM_CODEX_AUDIT             => '1',
+        },
+        process_list_runner => sub {
+            return [
+                {
+                    pid    => 44,
+                    tty    => 'pts/0',
+                    etimes => 90_000,
+                    cmd    => "codex resume $session_id",
+                },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                {
+                    pane_id         => '%77',
+                    tty             => '/dev/pts/0',
+                    current_command => 'node',
+                },
+            ];
+        },
+        tmux_send_runner => sub { return 1 },
+        sleep_runner     => sub { push @sleep_calls, 1; return 0 },
+        codex_resume_runner => sub {
+            my ( $sid, $prompt ) = @_;
+            push @resume_calls, [ $sid, $prompt ];
+            return 'Detached fallback reply.';
+        },
+    );
+    my $reply = $manager->codex_session_reply_for_update(
+        {
+            text       => 'Test live pane fallback',
+            chat       => { id => 398296603 },
+            message_id => 92,
+        },
+    );
+    is( $manager->resolve_codex_live_tmux_pane($session_id), '%77', 'codex_session_reply_for_update fallback test resolves the live pane first' );
+    is( $reply, 'Detached fallback reply.', 'codex_session_reply_for_update falls back to detached resume when the live pane never records the injected turn' );
+    is( scalar @resume_calls, 1, 'codex_session_reply_for_update retries through the detached resume path after live pane failure' );
+    ok( !-f $manager->listener_paths->{transcript_cursor_file}, 'codex_session_reply_for_update fallback test does not falsely record a completed live transcript cursor' );
+    my $audit = $manager->read_text_file( $manager->listener_paths->{audit_file} );
+    like( $audit, qr/"type":"codex\.live_pane\.fallback"/, 'codex_session_reply_for_update records the live-pane fallback audit event' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $cwd = tempdir( CLEANUP => 1 );
     my $session_id = '019e-live-outbound-session';
     my $runtime_dir = File::Spec->catdir( $home, '.telegram-codex', 'skills' );
     my $session_dir = File::Spec->catdir( $home, '.codex', 'sessions', '2026', '05', '22' );
@@ -4320,14 +4382,27 @@ EOF
     my $ps = File::Spec->catfile( $bin_dir, 'ps' );
     _write(
         $ps,
-        "#!/bin/sh\nprintf '  11 ? helper --noop\\n  22 pts/77 codex resume 019e-real-tty\\n'\n"
+        "#!/bin/sh\nprintf '  11 ? 1 helper --noop\\n  22 pts/77 3 codex resume 019e-real-tty\\n'\n"
     );
     chmod 0755, $ps or die "Unable to chmod fake ps helper: $!";
     local $ENV{PATH} = $bin_dir;
-    my $manager = new_manager( cwd => $home, home => $home );
+    my $manager = new_manager(
+        cwd  => $home,
+        home => $home,
+        tmux_panes_runner => sub {
+            return [
+                {
+                    pane_id         => '%118',
+                    tty             => '/dev/pts/77',
+                    current_command => 'node',
+                },
+            ];
+        },
+    );
     is( $manager->discover_codex_session_tty('019e-real-tty'), 'pts/77', 'discover_codex_session_tty uses the real ps branch and skips unrelated or ttyless rows' );
     my @rows = $manager->codex_process_rows;
     is( $rows[1]{cmd}, 'codex resume 019e-real-tty', 'codex_process_rows parses ps output through the default branch' );
+    is( $rows[1]{etimes}, 3, 'codex_process_rows parses elapsed seconds through the default branch' );
 }
 
 {
@@ -4367,6 +4442,35 @@ EOF
     };
     like( $send_log, qr/send-keys\|-t\|%118\|-l\|--\|Remember this code abc:foo\|/, 'tmux_send_text_to_pane sends literal text to the target pane' );
     like( $send_log, qr/send-keys\|-t\|%118\|Enter\|/, 'tmux_send_text_to_pane sends Enter to submit the injected text' );
+}
+
+{
+    my $manager = new_manager(
+        process_list_runner => sub {
+            return [
+                {
+                    pid    => 100,
+                    tty    => 'pts/34',
+                    etimes => 30_000,
+                    cmd    => 'codex resume 019e-prefer-newest',
+                },
+                {
+                    pid    => 200,
+                    tty    => 'pts/0',
+                    etimes => 10,
+                    cmd    => 'codex resume 019e-prefer-newest',
+                },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                { pane_id => '%118', tty => '/dev/pts/34', current_command => 'node' },
+                { pane_id => '%77',  tty => '/dev/pts/0',  current_command => 'node' },
+            ];
+        },
+    );
+    is( $manager->discover_codex_session_tty('019e-prefer-newest'), 'pts/0', 'discover_codex_session_tty prefers the freshest matching codex resume process' );
+    is( $manager->resolve_codex_live_tmux_pane('019e-prefer-newest'), '%77', 'resolve_codex_live_tmux_pane maps the freshest matching codex resume process to its tmux pane' );
 }
 
 {
@@ -4495,6 +4599,92 @@ EOF
 {
     my $home = tempdir( CLEANUP => 1 );
     my $cwd = tempdir( CLEANUP => 1 );
+    my $session_id = '019e-live-pane-no-user';
+    my $runtime_dir = File::Spec->catdir( $home, '.telegram-codex', 'skills' );
+    my $session_dir = File::Spec->catdir( $home, '.codex', 'sessions', '2026', '05', '22' );
+    make_path($runtime_dir);
+    make_path($session_dir);
+    my $session_file = File::Spec->catfile( $session_dir, "rollout-2026-05-22T18-31-00-$session_id.jsonl" );
+    _write( $session_file, q{} );
+    my $pauses = 0;
+    my $manager = new_manager(
+        cwd  => $cwd,
+        home => $home,
+        env  => { TELEGRAM_CODEX_SESSION_ID => 'skills' },
+        tmux_send_runner => sub { return 1; },
+        sleep_runner     => sub { $pauses++; return 1; },
+    );
+    my $error = eval {
+        $manager->run_codex_session_live_pane(
+            $session_id,
+            '%77',
+            { text => 'Never shows up' },
+        );
+        return q{};
+    };
+    $error = $@ if !$error;
+    like( $error, qr/never recorded the injected Telegram turn/, 'run_codex_session_live_pane fails fast when the live pane never records the injected Telegram turn' );
+    is( $pauses, 14, 'run_codex_session_live_pane exits after the fast-fail user-detection window instead of waiting for the full timeout' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $cwd = tempdir( CLEANUP => 1 );
+    my $session_id = '019e-live-pane-no-final';
+    my $runtime_dir = File::Spec->catdir( $home, '.telegram-codex', 'skills' );
+    my $session_dir = File::Spec->catdir( $home, '.codex', 'sessions', '2026', '05', '22' );
+    make_path($runtime_dir);
+    make_path($session_dir);
+    my $session_file = File::Spec->catfile( $session_dir, "rollout-2026-05-22T18-31-00-$session_id.jsonl" );
+    _write( $session_file, q{} );
+    my $pauses = 0;
+    my $manager = new_manager(
+        cwd  => $cwd,
+        home => $home,
+        env  => { TELEGRAM_CODEX_SESSION_ID => 'skills' },
+        tmux_send_runner => sub {
+            _write(
+                $session_file,
+                join(
+                    "\n",
+                    encode_json(
+                        {
+                            timestamp => '2026-05-22T18:31:01Z',
+                            type      => 'response_item',
+                            payload   => {
+                                type    => 'message',
+                                role    => 'user',
+                                content => [ { type => 'input_text', text => 'No final answer yet' } ],
+                            },
+                        }
+                    ),
+                    q{},
+                )
+            );
+            return 1;
+        },
+        sleep_runner     => sub { $pauses++; return 1; },
+    );
+    my $error = eval {
+        $manager->run_codex_session_live_pane(
+            $session_id,
+            '%77',
+            {
+                text       => 'No final answer yet',
+                chat       => { id => 398296603 },
+                message_id => 95,
+            },
+        );
+        return q{};
+    };
+    $error = $@ if !$error;
+    like( $error, qr/Timed out waiting for the live Codex pane to finish the Telegram turn/, 'run_codex_session_live_pane times out when the injected user turn appears but no final assistant answer follows' );
+    is( $pauses, 600, 'run_codex_session_live_pane waits through the full live-pane window when the user turn appears but no final assistant answer arrives' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $cwd = tempdir( CLEANUP => 1 );
     my $session_id = '019e-live-pane-progress-error';
     my $runtime_dir = File::Spec->catdir( $home, '.telegram-codex', 'skills' );
     my $session_dir = File::Spec->catdir( $home, '.codex', 'sessions', '2026', '05', '22' );
@@ -4614,6 +4804,42 @@ EOF
     $error = $@ if !$error;
     like( $error, qr/Timed out waiting for the live Codex pane to finish the Telegram turn/, 'run_codex_session_live_pane fails explicitly when no final answer arrives from the live transcript' );
     is( $pauses, 600, 'run_codex_session_live_pane executes the live-pane wait loop until timeout when no final answer arrives' );
+}
+
+{
+    my $manager = new_manager;
+    ok(
+        $manager->codex_live_pane_user_event_matches_prompt(
+            { text => 'Test', caption => q{} },
+            'Test',
+            "  Test  \n",
+        ),
+        'codex_live_pane_user_event_matches_prompt tolerates normalized whitespace differences',
+    );
+    ok(
+        $manager->codex_live_pane_user_event_matches_prompt(
+            { text => 'Test', caption => q{} },
+            'Test',
+            "[Telegram chat 398296603 message 2355]\nTest",
+        ),
+        'codex_live_pane_user_event_matches_prompt accepts transcript rows that wrap the Telegram text',
+    );
+    ok(
+        $manager->codex_live_pane_user_event_matches_prompt(
+            { text => q{}, caption => 'Picture note' },
+            "[caption] Picture note",
+            "Some transcript preface\n[caption] Picture note",
+        ),
+        'codex_live_pane_user_event_matches_prompt accepts caption matches when the text body is empty',
+    );
+    ok(
+        !$manager->codex_live_pane_user_event_matches_prompt(
+            { text => 'Test', caption => 'Picture note' },
+            "Test\n[caption] Picture note",
+            'Completely unrelated transcript row',
+        ),
+        'codex_live_pane_user_event_matches_prompt rejects unrelated transcript rows',
+    );
 }
 
 sub _write {

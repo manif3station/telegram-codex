@@ -1,3 +1,12 @@
+0.39 2026-05-22
+    - hardened live Telegram/TUI sync so stale long-lived `codex resume`
+      processes do not capture Telegram turns when a fresher tmux-backed
+      pane exists for the same session
+    - made live-pane reply handling fail fast when the injected Telegram
+      turn never appears in the transcript and fall back cleanly to
+      detached `codex exec resume` with an audit record instead of leaving
+      Telegram stuck behind the initial verbose kickoff line
+
 0.38 2026-05-22
     - added live Telegram/TUI synchronization through tmux-backed session
       injection plus transcript mirroring, so Telegram-originated requests
