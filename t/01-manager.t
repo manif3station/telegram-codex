@@ -1874,6 +1874,69 @@ sub new_manager {
 }
 
 {
+    my $home = tempdir( CLEANUP => 1 );
+    my $cwd = tempdir( CLEANUP => 1 );
+    my $session_id = '019e-unpaired-live-block';
+    my $runtime_dir = File::Spec->catdir( $home, '.telegram-codex', 'skills' );
+    my $session_dir = File::Spec->catdir( $home, '.codex', 'sessions', '2026', '05', '22' );
+    make_path($runtime_dir);
+    make_path($session_dir);
+    my $session_file = File::Spec->catfile( $session_dir, "rollout-2026-05-22T18-31-00-$session_id.jsonl" );
+    _write( $session_file, q{} );
+    my @resume_calls;
+    my @tmux_calls;
+    my $manager = new_manager(
+        cwd  => $cwd,
+        home => $home,
+        env  => {
+            TELEGRAM_CODEX_DISABLE_PAIRING => 0,
+            TELEGRAM_CODEX_SESSION_ID        => 'skills',
+            TELEGRAM_CODEX_TARGET_SESSION_ID => $session_id,
+            TELEGRAM_CODEX_AUDIT             => '1',
+        },
+        process_list_runner => sub {
+            return [
+                {
+                    pid    => 77,
+                    tty    => 'pts/0',
+                    etimes => 4,
+                    cmd    => "codex resume $session_id",
+                },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                {
+                    pane_id         => '%77',
+                    tty             => '/dev/pts/0',
+                    current_command => 'node',
+                },
+            ];
+        },
+        tmux_send_runner => sub {
+            push @tmux_calls, [@_];
+            return 1;
+        },
+        codex_resume_runner => sub {
+            push @resume_calls, [@_];
+            return 'unexpected';
+        },
+    );
+    my $reply = $manager->codex_session_reply_for_update(
+        {
+            text       => 'Give me the pairing code',
+            chat       => { id => 909, type => 'private' },
+            message_id => 4001,
+        },
+    );
+    ok( !defined $reply, 'codex_session_reply_for_update refuses to enter the Codex session path for an unpaired chat' );
+    is( scalar @tmux_calls, 0, 'codex_session_reply_for_update does not inject an unpaired chat into the live tmux pane' );
+    is( scalar @resume_calls, 0, 'codex_session_reply_for_update does not fall back to detached resume for an unpaired chat' );
+    my $audit = $manager->read_text_file( $manager->listener_paths->{audit_file} );
+    like( $audit, qr/"type":"pairing\.reply_path_blocked"/, 'codex_session_reply_for_update audits the blocked unpaired Codex-session path' );
+}
+
+{
     my $runtime = tempdir( CLEANUP => 1 );
     my @resume_calls;
     my @post_calls;

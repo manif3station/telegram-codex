@@ -1809,8 +1809,32 @@ sub listener_reply_message_for_update {
     return $reply_text;
 }
 
+sub listener_chat_is_paired_for_codex_session {
+    my ( $self, $summary, $paths ) = @_;
+    $paths ||= $self->listener_paths;
+    my $pairing_disabled = $self->env_value('TELEGRAM_CODEX_DISABLE_PAIRING') || q{};
+    return 1 if $pairing_disabled =~ /\A(?:1|true|yes|on)\z/i;
+    my $chat_id = defined $summary->{chat} ? $summary->{chat}{id} : undef;
+    return 0 if !defined $chat_id;
+    my $state = $self->read_listener_pairing_state($paths);
+    return 0 if !defined $state->{paired_chat_id} || $state->{paired_chat_id} eq q{};
+    return $chat_id == $state->{paired_chat_id} ? 1 : 0;
+}
+
 sub codex_session_reply_for_update {
     my ( $self, $summary, %args ) = @_;
+    my $paths = $self->listener_paths;
+    if ( !$self->listener_chat_is_paired_for_codex_session( $summary, $paths ) ) {
+        $self->append_listener_audit_event(
+            $paths,
+            'pairing.reply_path_blocked',
+            {
+                chat_id    => defined $summary->{chat} ? $summary->{chat}{id} : undef,
+                message_id => $summary->{message_id},
+            },
+        );
+        return undef;
+    }
     my $session_id = $self->resolve_codex_reply_session_id;
     my $live_pane = $self->resolve_codex_live_tmux_pane($session_id);
     if ( defined $live_pane && $live_pane ne q{} ) {
@@ -1829,7 +1853,7 @@ sub codex_session_reply_for_update {
         chomp $error;
         $error ||= 'Live Codex pane reply failed';
         $self->append_listener_audit_event(
-            $self->listener_paths,
+            $paths,
             'codex.live_pane.fallback',
             {
                 session_id => $session_id,
