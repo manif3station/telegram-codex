@@ -48,6 +48,13 @@ dashboard restart collector telegram-codex-<session-id>
 `dashboard telegram-codex.start --version` is intentionally side-effect free and proxies the real Codex CLI version output DD launcher checks expect, so DD command-family discovery can probe it without touching collectors.
 On a real startup, the launcher now uses `exec` for real Codex handoff, so a successful run does not leave an extra resident `cli/start` wrapper process behind.
 Ambient workspace `OLLAMA_MODEL` is ignored by Telegram-managed startup. If you intentionally want Telegram-managed startup to inject the Ollama launch profile, set `TELEGRAM_CODEX_OLLAMA_MODEL` explicitly.
+If you need managed-reply runtime diagnostics, start with:
+
+```bash
+dashboard telegram-codex.start --audit
+```
+
+That enables per-session audit rows in `~/.telegram-codex/<session-id>/audit.jsonl`.
 
 If `codex.session` is missing later, the managed reply path falls back to the same saved-session mapping in `~/.developer-dashboard/config/codex.json` instead of blindly using the collector session id.
 
@@ -75,6 +82,7 @@ The collector definition installed or healed by `telegram-codex.start` is:
 ```
 
 Dashboard may try to schedule it every five seconds, but singleton mode plus the same-session pid guard prevents a second `check-message <session-id>` copy from starting while the existing loop is still running. If `~/.telegram-codex/<session-id>/codex.session` exists, the worker automatically resumes that Codex session to generate the Telegram reply. If that file is missing, the worker falls back to the saved-session mapping in `~/.developer-dashboard/config/codex.json`. If `listener.inbox.jsonl` proves a newer next offset than `listener.offset`, the worker rewrites `listener.offset` before polling so restart state and replay diagnostics stay aligned. While that managed reply is being processed, the worker keeps Telegram `typing...` status active until the final outbound Telegram send attempt completes. Instead of the old placeholder `Codex is still working on your request...` heartbeat, the worker now streams real `codex exec resume --json` step events into one Telegram trace message that updates in place and remains visible after delivery.
+If a verbose progress edit fails, that failure is now treated as non-fatal and the worker still attempts final Telegram delivery. If the resumed Codex subprocess exits early or returns no final text, the worker now records exit code, signal, stderr tail, and streamed progress events in the audit file so the cut-off can be diagnosed.
 Before that managed reply is generated, supported inbound Telegram media is downloaded into the session runtime. Downloaded Telegram photos and image documents are attached to resumed Codex replies as real `codex exec resume -i` image inputs. Other downloaded media is still exposed through `*_local_path=` lines in the reply prompt for tool-based inspection.
 Managed task replies also tell Codex to answer directly without boilerplate prefaces and to do the actual work before replying instead of returning promise-only placeholders such as `will be done`.
 Nested managed `codex` invocations inside the same process tree inherit a startup reentry guard, so they do not keep re-running collector restart side effects.
@@ -159,6 +167,8 @@ Per-session runtime state lives under:
 - `~/.telegram-codex/<session-id>/listener.inbox.jsonl`
 - `~/.telegram-codex/<session-id>/codex.session`
 - `~/.telegram-codex/<session-id>/downloads/`
+- `~/.telegram-codex/<session-id>/audit.enabled`
+- `~/.telegram-codex/<session-id>/audit.jsonl`
 
 `listener.offset` keeps the next Telegram update offset and is healed immediately from the inbox ledger when inbox recovery proves a newer next offset.
 
@@ -166,6 +176,8 @@ Per-session runtime state lives under:
 
 `codex.session` keeps the real Codex session that the collector-owned `check-message <session-id>` worker resumes to generate Telegram replies.
 `downloads/` keeps inbound supported Telegram media that was downloaded for Codex before reply generation.
+`audit.enabled` turns on runtime audit capture for that collector session.
+`audit.jsonl` records received updates, progress-stream failures, `codex exec resume` progress events, stderr-tail details, and final reply success or failure.
 
 ## Media Handling Rule
 

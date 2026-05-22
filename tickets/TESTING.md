@@ -15,6 +15,18 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-298`:
+  - `Files=6, Tests=471`
+  - `Result: PASS`
+- Docker covered gate for `DD-298`:
+  - `Files=6, Tests=471`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Managed reply hardening regressions:
+  - failed Telegram verbose progress edits no longer abort the active managed Codex reply mid-operation
+  - `dashboard telegram-codex.start --audit` now persists a per-session audit marker and enables `~/.telegram-codex/<session-id>/audit.jsonl`
+  - the managed `codex exec resume` path now records streamed progress events, progress callback failures, exit code, signal, and stderr tail for diagnosis when a Telegram task cuts off mid-run
+  - initial verbose trace send failure, later verbose edit failure, and thrown progress callback failure are all covered as non-fatal paths that still attempt final delivery
 - Docker functional gate for `DD-297`:
   - `Files=6, Tests=429`
   - `Result: PASS`

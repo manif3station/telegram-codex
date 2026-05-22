@@ -664,6 +664,27 @@ sub new_manager {
 
 {
     my $home = tempdir( CLEANUP => 1 );
+    my $workspace = File::Spec->catdir( $home, 'mt5-ai' );
+    make_path($workspace);
+    my $manager = new_manager(
+        cwd  => $workspace,
+        home => $home,
+        env  => {
+            TELEGRAM_BOT_TOKEN           => 'token-xyz',
+            TELEGRAM_CODEX_START_CAPTURE => 1,
+            TELEGRAM_CODEX_RUNTIME_DIR   => '~/.telegram-codex',
+            CODEX_REAL_BIN               => '/opt/codex/bin/codex-real',
+        },
+    );
+    my $plan = $manager->execute_start('--audit');
+    my $audit_flag = File::Spec->catfile( $home, '.telegram-codex', $plan->{collector_session_id}, 'audit.enabled' );
+    ok( -f $audit_flag, 'execute_start --audit persists the per-session audit flag for the collector-owned worker' );
+    is( $manager->read_text_file($audit_flag), "1\n", 'execute_start --audit writes the enabled audit marker content' );
+    is( $plan->{collector_session_id}, 'mt5-ai', 'execute_start --audit still captures the governed collector session id' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
     my $workspace = File::Spec->catdir( $home, 'workspace-collector' );
     make_path($workspace);
     my @commands;
@@ -1294,7 +1315,7 @@ sub new_manager {
     like( $resume_calls[0][1], qr/text=hello2/, 'managed listener mode passes the inbound Telegram text into the Codex reply prompt' );
     is( $post_calls[0][0], 'sendChatAction', 'managed listener mode sends a typing action before the Codex-generated reply' );
     is( $post_calls[0][1]{action}, 'typing', 'managed listener mode uses Telegram typing status while the Codex reply is being generated' );
-    is( $post_calls[-2][1]{text}, 'This is a real Codex session reply.', 'managed listener mode sends the Codex-generated reply instead of a placeholder' );
+    is( $post_calls[-1][1]{text}, 'This is a real Codex session reply.', 'managed listener mode sends the Codex-generated reply instead of a placeholder' );
 }
 
 {
@@ -1358,8 +1379,8 @@ sub new_manager {
     like( $resume_calls[0][1], qr/text=Hi/, 'collector-owned check-message passes the inbound text into the Codex reply prompt' );
     is( $post_calls[0][0], 'sendChatAction', 'collector-owned check-message sends a typing action before the reply in managed Codex-session mode' );
     is( $post_calls[0][1]{action}, 'typing', 'collector-owned check-message uses Telegram typing status while Codex is generating the reply' );
-    is( $post_calls[-2][0], 'sendMessage', 'collector-owned check-message sends the final Telegram reply after the typing action' );
-    is( $post_calls[-2][1]{text}, 'Collector reply from Codex session.', 'collector-owned check-message sends the Codex-generated reply text' );
+    is( $post_calls[-1][0], 'sendMessage', 'collector-owned check-message sends the final Telegram reply after the typing action' );
+    is( $post_calls[-1][1]{text}, 'Collector reply from Codex session.', 'collector-owned check-message sends the Codex-generated reply text' );
     is( $typing_events[0], 'guard-start', 'collector-owned check-message starts the typing guard before managed reply work' );
     is( $typing_events[1], 'resume', 'collector-owned check-message resumes Codex while the typing guard is active' );
     ok( scalar( grep { $_ eq 'send' } @typing_events ) >= 1, 'collector-owned check-message performs Telegram sends while the typing guard remains active' );
@@ -1787,6 +1808,113 @@ sub new_manager {
 
 {
     my $runtime = tempdir( CLEANUP => 1 );
+    my @errors;
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR      => $runtime,
+            TELEGRAM_CODEX_LISTENER_MODE    => 'codex-session',
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-task-work',
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            die "Telegram POST failed for editMessageText: 500 Internal Server Error\n" if $method eq 'editMessageText';
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 996, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    my $reporter = $manager->start_listener_verbose_reporter(
+        {
+            update_id  => 30021,
+            message_id => 321,
+            chat       => { id => 88, type => 'private' },
+            text       => 'Finish all tasks with all gates',
+        },
+        on_error => sub { push @errors, @_; return 1; },
+    );
+    ok( $reporter->{emit}->('Turn started'), 'start_listener_verbose_reporter still emits the first line when Telegram accepts the initial trace message' );
+    ok( !$reporter->{emit}->('Running command: /bin/bash -lc pwd'), 'start_listener_verbose_reporter converts later edit failures into a false return instead of dying' );
+    like( $errors[0], qr/editMessageText: 500 Internal Server Error/, 'start_listener_verbose_reporter reports the Telegram verbose edit failure through the error callback' );
+    is( $post_calls[0][0], 'sendMessage', 'start_listener_verbose_reporter still posts the initial verbose trace message before the edit failure' );
+    is( $post_calls[1][0], 'editMessageText', 'start_listener_verbose_reporter attempted the later in-place edit before reporting the failure' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @errors;
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN               => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR       => $runtime,
+            TELEGRAM_CODEX_LISTENER_MODE     => 'codex-session',
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-task-work',
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            die "Telegram POST failed for sendMessage: 500 Initial verbose trace rejected\n" if $method eq 'sendMessage';
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 997, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    my $reporter = $manager->start_listener_verbose_reporter(
+        {
+            update_id  => 30022,
+            message_id => 322,
+            chat       => { id => 88, type => 'private' },
+            text       => 'Finish all tasks with all gates',
+        },
+        on_error => sub { push @errors, @_; return 1; },
+    );
+    ok( $reporter, 'start_listener_verbose_reporter still returns a reporter object when the first verbose send fails' );
+    ok( !$reporter->{emit}->('Turn started'), 'start_listener_verbose_reporter returns false instead of dying when the first verbose send is rejected' );
+    like( $errors[0], qr/sendMessage: 500 Initial verbose trace rejected/, 'start_listener_verbose_reporter reports the initial verbose send failure through the error callback' );
+    is( $post_calls[0][0], 'sendMessage', 'start_listener_verbose_reporter attempted the initial verbose trace send before disabling itself' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+    );
+    my $paths = $manager->listener_paths_for_session('audit-direct');
+    ok( !$manager->listener_audit_enabled($paths), 'listener audit is disabled by default without env or marker file' );
+    ok( $manager->set_listener_audit_enabled( 'audit-direct', 1 ), 'set_listener_audit_enabled writes the per-session audit marker file' );
+    ok( $manager->listener_audit_enabled($paths), 'listener audit becomes enabled after the marker file is written' );
+    ok(
+        $manager->append_listener_audit_event(
+            $paths,
+            'audit.direct',
+            {
+                worked => JSON::XS::true,
+                note   => 'written from direct test',
+            },
+        ),
+        'append_listener_audit_event writes a JSONL audit row when audit is enabled',
+    );
+    my @rows = grep { defined $_ && $_ ne q{} } split /\n/, $manager->read_text_file( $paths->{audit_file} );
+    my $decoded = decode_json( $rows[0] );
+    is( $decoded->{type}, 'audit.direct', 'append_listener_audit_event persists the event type' );
+    is( $decoded->{note}, 'written from direct test', 'append_listener_audit_event persists the supplied payload fields' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
     my $manager = new_manager(
         cwd  => $runtime,
         home => $runtime,
@@ -2008,6 +2136,127 @@ sub new_manager {
 
 {
     my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 104,
+                        message   => {
+                            message_id => 22,
+                            text       => 'Finish all tasks with all gates',
+                            chat       => { id => 99, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        codex_resume_runner => sub {
+            my ( $session_id, $prompt, $summary, $args ) = @_;
+            $args->{on_progress}->('Turn started');
+            $args->{on_progress}->('Running command: /bin/bash -lc pwd');
+            return 'Reply still sent after progress-stream failure.';
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            die "Telegram POST failed for editMessageText: 500 Internal Server Error\n" if $method eq 'editMessageText';
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 780 + scalar @post_calls, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+        typing_guard_runner => sub { return sub { return 1 } },
+    );
+    $manager->write_codex_target_session_id( 'skills', 'session-from-ledger' );
+    my $result = $manager->execute_check_messages( 'skills', 1, 0 );
+    is( $result->{processed}, 1, 'collector-owned check-message still records the inbound message when Telegram verbose progress edits fail mid-run' );
+    is( $result->{replied}, 1, 'collector-owned check-message still sends the final reply when Telegram verbose progress edits fail mid-run' );
+    is( scalar @{ $result->{progress_errors} }, 1, 'collector-owned check-message records the non-fatal Telegram verbose progress failure separately from reply errors' );
+    like( $result->{progress_errors}[0]{error}, qr/editMessageText: 500 Internal Server Error/, 'collector-owned check-message preserves the Telegram verbose progress failure detail' );
+    is( scalar @{ $result->{reply_errors} }, 0, 'collector-owned check-message no longer treats the mid-progress verbose edit failure as a terminal reply error' );
+    is( $post_calls[0][0], 'sendChatAction', 'collector-owned check-message still starts typing before the managed reply path' );
+    is( $post_calls[1][0], 'sendMessage', 'collector-owned check-message sends the initial verbose trace message before the edit failure' );
+    is( $post_calls[2][0], 'editMessageText', 'collector-owned check-message still attempts the later verbose edit that fails non-fatally' );
+    is( $post_calls[-1][0], 'sendMessage', 'collector-owned check-message still sends the final Telegram reply after the verbose progress failure' );
+    is( $post_calls[-1][1]{text}, 'Reply still sent after progress-stream failure.', 'collector-owned check-message still delivers the Codex final reply after the verbose progress failure' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN               => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR       => $runtime,
+            TELEGRAM_CODEX_LISTENER_MODE     => 'codex-session',
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-emit-dies',
+            TELEGRAM_CODEX_AUDIT             => '1',
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 911,
+                        message   => {
+                            message_id => 73,
+                            text       => 'Finish all tasks with all gates',
+                            chat       => { id => 88, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        codex_resume_runner => sub {
+            my ( $session_id, $prompt, $summary, $args ) = @_;
+            $args->{on_progress}->('step one') if $args->{on_progress};
+            return 'Managed final reply after emit failure';
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 700 + scalar @post_calls, chat => { id => $params->{chat_id} } },
+            };
+        },
+    );
+    {
+        no warnings 'redefine';
+        local *Telegram::Codex::Manager::start_listener_verbose_reporter = sub {
+            return {
+                emit   => sub { die "simulated reporter emit death\n" },
+                finish => sub { return 1 },
+            };
+        };
+        my $result = $manager->execute_check_messages( 'session-emit-dies', 1, 0 );
+        is( $result->{processed}, 1, 'execute_check_messages still processes the update when the verbose reporter emit callback dies' );
+        is( $result->{replied}, 1, 'execute_check_messages still delivers the final reply when the verbose reporter emit callback dies' );
+        is( scalar @{ $result->{progress_errors} }, 1, 'execute_check_messages records the thrown verbose reporter emit failure as one progress error' );
+        like( $result->{progress_errors}[0]{error}, qr/simulated reporter emit death/, 'execute_check_messages exposes the thrown verbose reporter emit failure detail' );
+        is( $post_calls[-1][0], 'sendMessage', 'execute_check_messages still sends the final Telegram reply after the verbose reporter emit callback dies' );
+    }
+    my @rows = grep { defined $_ && $_ ne q{} } split /\n/, $manager->read_text_file( $manager->listener_paths_for_session('session-emit-dies')->{audit_file} );
+    my @decoded = map { decode_json($_) } @rows;
+    ok(
+        scalar( grep { $_->{type} && $_->{type} eq 'progress.emit.failed' && $_->{error} =~ /simulated reporter emit death/ } @decoded ),
+        'execute_check_messages records a progress.emit.failed audit row when the verbose reporter emit callback dies',
+    );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
     my @resume_calls;
     my @post_calls;
     my @download_calls;
@@ -2065,7 +2314,7 @@ sub new_manager {
     is( scalar @download_calls, 1, 'collector-owned check-message downloads inbound managed media before asking Codex to reply' );
     like( $resume_calls[0][1], qr/photo_local_path=.*update-103.*photo-103\.jpg/, 'collector-owned check-message passes the downloaded photo local path into the Codex reply prompt' );
     like( $resume_calls[0][1], qr/already downloaded locally for this active Codex session/i, 'collector-owned check-message tells Codex the downloaded media is locally available' );
-    is( $post_calls[-2][1]{text}, 'Photo processed from local file.', 'collector-owned check-message still sends the Codex-generated text reply after downloading photo media' );
+    is( $post_calls[-1][1]{text}, 'Photo processed from local file.', 'collector-owned check-message still sends the Codex-generated text reply after downloading photo media' );
 }
 
 {
@@ -2221,7 +2470,7 @@ EOF
         cwd  => $runtime,
         home => $runtime,
         env  => {
-            VERSION                         => '0.29',
+            VERSION                         => '0.30',
             TELEGRAM_BOT_TOKEN              => 'token-xyz',
             TELEGRAM_CODEX_RUNTIME_DIR      => $runtime,
             CODEX_SESSION_ID                => 'session-real-resume',
@@ -2263,7 +2512,93 @@ EOF
         ],
         'codex_session_reply_for_update streams real codex json events through the progress callback',
     );
-    like( $manager->{ua}->agent, qr/\Atelegram-codex\/0\.29\z/, 'manager user agent tracks the current skill version' );
+    like( $manager->{ua}->agent, qr/\Atelegram-codex\/0\.30\z/, 'manager user agent tracks the current skill version' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $bin_dir = File::Spec->catdir( $runtime, 'bin' );
+    make_path($bin_dir);
+    my $real_codex = File::Spec->catfile( $bin_dir, 'codex-real' );
+    _write( $real_codex, <<"EOF" );
+#!/bin/sh
+echo "provider socket closed unexpectedly" >&2
+exit 7
+EOF
+    chmod 0755, $real_codex or die "Unable to chmod fake failing real codex resume binary: $!";
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN              => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR      => $runtime,
+            TELEGRAM_CODEX_LISTENER_MODE    => 'codex-session',
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-real-resume',
+            CODEX_REAL_BIN                  => $real_codex,
+        },
+    );
+    my $error = eval {
+        $manager->codex_session_reply_for_update(
+            {
+                message_id => 18,
+                text       => 'hello from telegram',
+                chat       => { id => 88, type => 'private' },
+            }
+        );
+        1;
+    } ? q{} : $@;
+    like( $error, qr/Codex resume returned an empty Telegram reply \(exit=7 signal=0\)/, 'codex_session_reply_for_update reports the real exit status when the managed codex resume subprocess fails before writing a reply' );
+    like( $error, qr/provider socket closed unexpectedly/, 'codex_session_reply_for_update includes stderr tail detail from the failed managed codex resume subprocess' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $bin_dir = File::Spec->catdir( $runtime, 'bin' );
+    make_path($bin_dir);
+    my $real_codex = File::Spec->catfile( $bin_dir, 'codex-real' );
+    _write( $real_codex, <<"EOF" );
+#!/bin/sh
+OUT=""
+PREV=""
+for ARG in "\$@"; do
+  if [ "\$PREV" = "--output-last-message" ]; then
+    OUT="\$ARG"
+  fi
+  PREV="\$ARG"
+done
+printf '%s\n' '{"type":"turn.started"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Long task step"}}'
+printf 'Final answer after progress callback failure' > "\$OUT"
+exit 0
+EOF
+    chmod 0755, $real_codex or die "Unable to chmod fake callback-failing real codex resume binary: $!";
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN               => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR       => $runtime,
+            TELEGRAM_CODEX_LISTENER_MODE     => 'codex-session',
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-callback-failure',
+            TELEGRAM_CODEX_AUDIT             => '1',
+            CODEX_REAL_BIN                   => $real_codex,
+        },
+    );
+    my $reply = $manager->codex_session_reply_for_update(
+        {
+            message_id => 41,
+            text       => 'Finish all tasks with all gates',
+            chat       => { id => 88, type => 'private' },
+        },
+        on_progress => sub { die "progress callback blew up\n" },
+    );
+    is( $reply, 'Final answer after progress callback failure', 'codex_session_reply_for_update still returns the final reply when the progress callback dies' );
+    my @rows = grep { defined $_ && $_ ne q{} } split /\n/, $manager->read_text_file( $manager->listener_paths->{audit_file} );
+    my @decoded = map { decode_json($_) } @rows;
+    ok(
+        scalar( grep { $_->{type} && $_->{type} eq 'codex.progress.callback_failed' && $_->{error} =~ /progress callback blew up/ } @decoded ),
+        'codex_session_reply_for_update records a codex.progress.callback_failed audit event when the progress callback dies',
+    );
 }
 
 {

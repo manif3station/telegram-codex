@@ -49,6 +49,13 @@ dashboard restart collector telegram-codex-<session-id>
 
 `dashboard telegram-codex.start --version` is a safe metadata query for DD probe/discovery paths, must not create or restart collectors, and proxies the real underlying Codex CLI version output the DD launcher expects.
 Successful managed startup now hands off with `exec`, so the wrapper process should not remain as an extra long-lived `cli/start` parent once Codex is running. Ambient workspace `OLLAMA_MODEL` is intentionally ignored here; use `TELEGRAM_CODEX_OLLAMA_MODEL` only when Telegram-managed startup should explicitly inject the Ollama launch profile.
+If the managed reply path is cutting off mid-operation, use:
+
+```bash
+dashboard telegram-codex.start --audit
+```
+
+That enables per-session audit rows under `~/.telegram-codex/<session-id>/audit.jsonl`.
 
 When `~/.telegram-codex/<session-id>/codex.session` exists, the collector-owned `dashboard telegram-codex.check-message <session-id>` worker automatically resumes that Codex session to generate the Telegram reply text.
 If that file is missing, the managed reply path falls back to the saved-session mapping in `~/.developer-dashboard/config/codex.json`.
@@ -69,6 +76,7 @@ The collector shape is:
 ```
 
 `dashboard telegram-codex.check-message <session-id>` is a long-running polling loop. Dashboard may try to start it every five seconds, but singleton mode plus the same-session pid guard prevents overlap while the active loop is still running. When `codex.session` exists for that session, the worker replies through that persisted Codex session automatically. If that file is missing, the worker falls back to the saved-session mapping in `~/.developer-dashboard/config/codex.json`. If `listener.inbox.jsonl` proves a newer next offset than `listener.offset`, the worker rewrites `listener.offset` before polling so restart state stays accurate. While a managed Codex reply is being processed, the worker keeps Telegram `typing...` status active until the final outbound Telegram send attempt completes. Instead of a placeholder heartbeat, the worker now streams real `codex exec resume --json` agent and command events into one Telegram verbose trace message that stays visible in chat. Supported inbound media is downloaded into the session runtime before Codex replies. Downloaded Telegram photos and image documents are attached to resumed Codex replies as real image inputs; other downloaded media remains local-path-only for tool-based inspection. Codex can return attachment directives to send photos, audio, or documents back to Telegram.
+If a verbose progress edit fails, the worker now records that as a non-fatal progress failure and still attempts the final Telegram reply. If the resumed Codex subprocess exits early or returns an empty reply, the worker now records exit code, signal, stderr tail, and progress events in `audit.jsonl` instead of only surfacing a generic failure.
 
 ## What The Skill Can Receive
 
@@ -192,6 +200,7 @@ telegram_attachment_caption=optional caption
 - Expect one DD collector per workspace session.
 - Expect per-session state under `~/.telegram-codex/<session-id>/`.
 - Expect nested managed `codex` calls in the same process tree to skip collector restarts because startup carries a reentry guard.
+- Expect `~/.telegram-codex/<session-id>/audit.jsonl` to be the first place to inspect when a managed Telegram task starts, streams progress, then cuts off mid-run.
 - Do not claim outbound video sending support.
 - Do not claim binary attachment content was inspected unless it was downloaded first.
 - Do expect the managed Telegram path to keep a readable verbose step trace in chat from real `codex exec resume --json` events instead of a placeholder progress heartbeat.

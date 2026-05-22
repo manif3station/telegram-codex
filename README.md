@@ -46,6 +46,13 @@ When `dashboard telegram-codex.start` runs with `TELEGRAM_BOT_TOKEN` and `TELEGR
 
 `dashboard telegram-codex.start --version` is a pure metadata query that proxies the real underlying Codex CLI version output DD expects. DD can probe it safely without creating or restarting collectors.
 Successful managed startup now hands off with `exec`, so the wrapper process does not stay resident as an extra long-lived `cli/start` parent after Codex takes over. Ambient workspace `OLLAMA_MODEL` is no longer treated as an automatic provider override for Telegram-managed startup. If Telegram-owned startup really needs the Ollama launch profile, set `TELEGRAM_CODEX_OLLAMA_MODEL` explicitly.
+If you need runtime diagnostics for a broken managed reply, run:
+
+```bash
+dashboard telegram-codex.start --audit
+```
+
+That enables a per-session audit trail under `~/.telegram-codex/<session-id>/` without changing the collector contract.
 
 The collector-owned polling loop is now the always-on path. The old standalone listener command is no longer the primary runtime model.
 When `codex.session` exists for that collector session, `dashboard telegram-codex.check-message <session-id>` automatically routes replies back through that saved Codex session.
@@ -163,6 +170,7 @@ The collector record created or healed by `dashboard telegram-codex.start` looks
 `dashboard telegram-codex.check-message <session-id>` is a long-running polling loop. Dashboard attempts to schedule it every five seconds, but singleton mode plus the same-session pid guard prevents overlap while the existing loop is still alive. When `~/.telegram-codex/<session-id>/codex.session` exists, the worker resumes that Codex session to generate the Telegram reply text. If `listener.offset` is missing or stale but `listener.inbox.jsonl` proves a newer next offset, the worker rewrites `listener.offset` to that recovered value before polling so restart state stays truthful.
 While Codex is processing a managed reply, the worker keeps Telegram `typing...` status active through both reply generation and the final outbound Telegram send so the indicator does not disappear before the reply arrives.
 Instead of the old placeholder progress heartbeat, the worker now streams real step-by-step Codex verbose events from `codex exec resume --json` into one Telegram trace message that updates in place and stays visible in chat.
+If a Telegram verbose progress update fails mid-run, the worker now records that as a non-fatal progress error and still attempts final delivery. If the resumed Codex subprocess exits early or returns an empty reply, the worker now preserves exit status and stderr-tail detail for diagnosis instead of collapsing to a generic failure.
 For inbound non-text updates, the worker downloads supported attachments into `~/.telegram-codex/<session-id>/downloads/` before asking Codex to reply. Downloaded Telegram photos and image documents are attached to the resumed Codex session as real image inputs. Other downloaded media still flows by local path for tool-based inspection. Codex can send a non-text reply back by returning directive lines:
 
 ```text
@@ -185,10 +193,14 @@ The skill keeps per-session Telegram state under:
 - `~/.telegram-codex/<session-id>/listener.inbox.jsonl`
 - `~/.telegram-codex/<session-id>/codex.session`
 - `~/.telegram-codex/<session-id>/downloads/`
+- `~/.telegram-codex/<session-id>/audit.enabled`
+- `~/.telegram-codex/<session-id>/audit.jsonl`
 
 `codex.session` stores the actual Codex session that Telegram replies should resume. That target may be different from the collector session name when `TICKET_REF` maps the workspace to a saved Codex session.
 `listener.offset` is healed from `listener.inbox.jsonl` immediately when inbox-ledger recovery proves a newer next offset.
 `downloads/` stores inbound media that the managed collector downloaded for Codex inspection before reply generation.
+`audit.enabled` opts the collector-owned worker into runtime audit capture.
+`audit.jsonl` stores per-event diagnostic rows such as received updates, streamed progress events, progress callback failures, reply delivery failures, and final `codex exec resume` exit details.
 
 ## Important Rules
 

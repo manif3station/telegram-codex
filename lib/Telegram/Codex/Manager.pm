@@ -9,9 +9,12 @@ use File::Path qw(make_path);
 use File::Spec;
 use File::Temp qw(tempfile);
 use HTTP::Request::Common qw(GET POST);
+use IO::Select;
+use IPC::Open3 qw(open3);
 use JSON::XS qw(decode_json encode_json);
 use LWP::UserAgent;
 use MIME::Base64 qw(encode_base64);
+use Symbol qw(gensym);
 use URI;
 
 sub new {
@@ -110,6 +113,9 @@ sub auto_setup {
 
 sub execute_start {
     my ( $self, @argv ) = @_;
+    my $audit_requested = scalar grep { defined $_ && $_ eq '--audit' } @argv;
+    $audit_requested = $audit_requested ? 1 : 0;
+    @argv = grep { !defined $_ || $_ ne '--audit' } @argv;
     my $cmd = defined $argv[0] ? $argv[0] : q{};
 
     if ( $cmd eq '--version' || $cmd eq '-V' || $cmd eq 'version' ) {
@@ -157,6 +163,11 @@ sub execute_start {
     }
 
     my $plan = $self->codex_start_plan( $config, @argv );
+    my $audit_session_id = defined $plan->{collector_session_id} && $plan->{collector_session_id} ne q{}
+      ? $plan->{collector_session_id}
+      : $self->workspace_session_id;
+    $self->set_listener_audit_enabled( $audit_session_id, $audit_requested )
+      if defined $audit_session_id && $audit_session_id ne q{};
     return $plan if $self->env_value('TELEGRAM_CODEX_START_CAPTURE');
 
     if ( $plan->{start_collector} ) {
@@ -344,6 +355,7 @@ sub execute_check_messages {
     $ENV{TELEGRAM_CODEX_SESSION_ID} = $session_id;
     my $paths = $self->listener_paths_for_session($session_id);
     make_path( $paths->{runtime_dir} ) if !-d $paths->{runtime_dir};
+    my $audit_enabled = $self->listener_audit_enabled($paths);
     my $guard = $self->begin_check_message_session($session_id, $paths);
     return {
         mode        => 'check_message',
@@ -386,6 +398,19 @@ sub execute_check_messages {
     my @reply_errors;
     my @typing_errors;
     my @get_errors;
+    my @progress_errors;
+
+    $self->append_listener_audit_event(
+        $paths,
+        'check-message.started',
+        {
+            session_id    => $session_id,
+            max_cycles    => $max_cycles,
+            poll_timeout  => $poll_timeout,
+            reply_mode    => $self->listener_reply_mode_for_update($reply_text),
+            audit_enabled => $audit_enabled ? JSON::XS::true : JSON::XS::false,
+        },
+    );
 
     while (1) {
         my %params = (
@@ -400,6 +425,14 @@ sub execute_check_messages {
                 cycle => $cycles,
                 error => $error,
             };
+            $self->append_listener_audit_event(
+                $paths,
+                'getUpdates.failed',
+                {
+                    cycle => $cycles,
+                    error => $error,
+                },
+            );
             $cycles++;
             last if defined $max_cycles && $cycles >= $max_cycles;
             $self->listener_pause_seconds(1);
@@ -412,6 +445,17 @@ sub execute_check_messages {
             next if defined $update_id && $self->inbox_contains_update_id( $paths->{inbox_file}, $update_id );
             my $summary = $self->summarise_update($update);
             $self->append_inbox_entry( $paths->{inbox_file}, $summary );
+            $self->append_listener_audit_event(
+                $paths,
+                'update.received',
+                {
+                    update_id  => $summary->{update_id},
+                    message_id => $summary->{message_id},
+                    chat_id    => defined $summary->{chat} ? $summary->{chat}{id} : undef,
+                    has_text   => defined $summary->{text} && $summary->{text} ne q{} ? JSON::XS::true : JSON::XS::false,
+                    has_media  => $self->summary_has_media($summary) ? JSON::XS::true : JSON::XS::false,
+                },
+            );
             $processed++;
             my $message = $update->{message} || $update->{edited_message} || {};
             my $chat_id = $message->{chat}{id};
@@ -421,8 +465,30 @@ sub execute_check_messages {
             if ( defined $chat_id && $self->update_needs_listener_reply($summary) ) {
                 my $sent = eval {
                     my $runner = sub {
-                        my $reporter = $reply_mode eq 'codex-session'
-                          ? $self->start_listener_verbose_reporter($summary)
+                        my $reporter = ( $reply_mode eq 'codex-session' && $self->listener_should_stream_progress($summary) )
+                          ? $self->start_listener_verbose_reporter(
+                                $summary,
+                                on_error => sub {
+                                    my ($error) = @_;
+                                    push @progress_errors, {
+                                        update_id  => $summary->{update_id},
+                                        chat_id    => $chat_id,
+                                        message_id => $message->{message_id},
+                                        error      => $error,
+                                    };
+                                    $self->append_listener_audit_event(
+                                        $paths,
+                                        'progress.reporter.failed',
+                                        {
+                                            update_id  => $summary->{update_id},
+                                            message_id => $message->{message_id},
+                                            chat_id    => $chat_id,
+                                            error      => $error,
+                                        },
+                                    );
+                                    return 1;
+                                },
+                            )
                           : undef;
                         my $reply_message = $self->listener_reply_message_for_update(
                             $summary,
@@ -433,21 +499,53 @@ sub execute_check_messages {
                                 ? (
                                     on_progress => sub {
                                         my ($line) = @_;
-                                        $reporter->{emit}->($line);
+                                        my $ok = eval { $reporter->{emit}->($line) };
+                                        if ($@) {
+                                            my $error = $@;
+                                            chomp $error;
+                                            $error ||= 'Unknown Telegram verbose reporter failure';
+                                            push @progress_errors, {
+                                                update_id  => $summary->{update_id},
+                                                chat_id    => $chat_id,
+                                                message_id => $message->{message_id},
+                                                error      => $error,
+                                            };
+                                            $self->append_listener_audit_event(
+                                                $paths,
+                                                'progress.emit.failed',
+                                                {
+                                                    update_id  => $summary->{update_id},
+                                                    message_id => $message->{message_id},
+                                                    chat_id    => $chat_id,
+                                                    error      => $error,
+                                                },
+                                            );
+                                        }
                                     },
                                   )
                                 : ()
                             ),
                         );
                         return 0 if !defined $reply_message || $reply_message eq q{};
-                        $reporter->{emit}->('Sending final reply to Telegram') if $reporter;
+                        eval { $reporter->{emit}->('Sending final reply to Telegram') } if $reporter;
                         $self->dispatch_listener_reply(
                             chat_id             => $chat_id,
                             reply_to_message_id => $message->{message_id},
                             reply_message       => $reply_message,
                         );
-                        $reporter->{emit}->('Final reply sent') if $reporter;
-                        $reporter->{finish}->() if $reporter;
+                        if ($reporter) {
+                            eval { $reporter->{emit}->('Final reply sent') };
+                            eval { $reporter->{finish}->() };
+                        }
+                        $self->append_listener_audit_event(
+                            $paths,
+                            'reply.sent',
+                            {
+                                update_id  => $summary->{update_id},
+                                message_id => $message->{message_id},
+                                chat_id    => $chat_id,
+                            },
+                        );
                         return 1;
                     };
                     if ( $reply_mode eq 'codex-session' ) {
@@ -467,6 +565,16 @@ sub execute_check_messages {
                         message_id => $message->{message_id},
                         error      => $error,
                     };
+                    $self->append_listener_audit_event(
+                        $paths,
+                        'reply.failed',
+                        {
+                            update_id  => $summary->{update_id},
+                            message_id => $message->{message_id},
+                            chat_id    => $chat_id,
+                            error      => $error,
+                        },
+                    );
                 }
                 elsif ($sent) {
                     $replied++;
@@ -489,11 +597,13 @@ sub execute_check_messages {
         replied      => $replied,
         get_errors   => \@get_errors,
         typing_errors => \@typing_errors,
+        progress_errors => \@progress_errors,
         reply_errors => \@reply_errors,
         next_offset  => $offset,
         offset_file  => $paths->{offset_file},
         inbox_file   => $paths->{inbox_file},
         pid_file     => $paths->{pid_file},
+        audit_file   => $paths->{audit_file},
     };
 }
 
@@ -1337,8 +1447,43 @@ sub listener_paths_for_session {
         inbox_file   => File::Spec->catfile( $runtime_dir, 'listener.inbox.jsonl' ),
         pid_file     => File::Spec->catfile( $runtime_dir, 'listener.pid' ),
         log_file     => File::Spec->catfile( $runtime_dir, 'listener.log' ),
+        audit_file   => File::Spec->catfile( $runtime_dir, 'audit.jsonl' ),
+        audit_flag_file => File::Spec->catfile( $runtime_dir, 'audit.enabled' ),
         target_session_file => File::Spec->catfile( $runtime_dir, 'codex.session' ),
     };
+}
+
+sub listener_audit_enabled {
+    my ( $self, $paths ) = @_;
+    $paths ||= $self->listener_paths;
+    return 1 if ( $self->env_value('TELEGRAM_CODEX_AUDIT') || q{} ) =~ /\A(?:1|true|yes|on)\z/i;
+    return 1 if defined $paths->{audit_flag_file} && -f $paths->{audit_flag_file};
+    return 0;
+}
+
+sub set_listener_audit_enabled {
+    my ( $self, $session_id, $enabled ) = @_;
+    return if !defined $session_id || $session_id eq q{};
+    my $paths = $self->listener_paths_for_session($session_id);
+    make_path( $paths->{runtime_dir} ) if !-d $paths->{runtime_dir};
+    return $self->write_text_file( $paths->{audit_flag_file}, "1\n" ) if $enabled;
+    return 1;
+}
+
+sub append_listener_audit_event {
+    my ( $self, $paths, $type, $payload ) = @_;
+    return 1 if !$self->listener_audit_enabled($paths);
+    my %row = (
+        ts   => $self->now_string,
+        type => $type,
+        %{ $payload || {} },
+    );
+    my $path = $paths->{audit_file};
+    make_path( dirname($path) ) if !-d dirname($path);
+    open my $fh, '>>', $path or return 0;
+    print {$fh} encode_json( \%row ) . "\n";
+    close $fh;
+    return 1;
 }
 
 sub listener_session_id {
@@ -1451,6 +1596,8 @@ sub run_codex_session_resume {
     make_path( $self->listener_paths->{runtime_dir} ) if !-d $self->listener_paths->{runtime_dir};
     my ( $fh, $output_file ) = tempfile( 'telegram-codex-reply-XXXX', DIR => $self->listener_paths->{runtime_dir}, SUFFIX => '.txt' );
     close $fh or die "Unable to close $output_file: $!";
+    my ( $stderr_fh, $stderr_file ) = tempfile( 'telegram-codex-stderr-XXXX', DIR => $self->listener_paths->{runtime_dir}, SUFFIX => '.log' );
+    close $stderr_fh or die "Unable to close $stderr_file: $!";
     my @image_inputs = $self->codex_session_image_input_paths($summary);
     my @command = (
         $real_codex_bin,
@@ -1465,23 +1612,89 @@ sub run_codex_session_resume {
         $session_id,
         $prompt,
     );
-    open my $json_fh, '-|', @command or die "Unable to exec $real_codex_bin: $!";
-    while ( my $line = <$json_fh> ) {
-        chomp $line;
-        next if !defined $line || $line eq q{};
-        my $event = eval { decode_json($line) };
-        next if $@ || ref($event) ne 'HASH';
-        next if !$on_progress;
-        my @lines = $self->codex_progress_lines_for_event($event);
-        $on_progress->($_) for @lines;
+    my $stderr = gensym();
+    my $pid = open3( undef, my $json_fh, $stderr, @command );
+    my $selector = IO::Select->new( $json_fh, $stderr );
+    my @stderr_lines;
+    while ( my @ready = $selector->can_read ) {
+        for my $handle (@ready) {
+            my $line = <$handle>;
+            if ( !defined $line ) {
+                $selector->remove($handle);
+                next;
+            }
+            chomp $line;
+            next if !defined $line || $line eq q{};
+            if ( fileno($handle) == fileno($json_fh) ) {
+                my $event = eval { decode_json($line) };
+                if ( !$@ && ref($event) eq 'HASH' ) {
+                    $self->append_listener_audit_event(
+                        $self->listener_paths,
+                        'codex.progress.event',
+                        {
+                            type => $event->{type},
+                            item => ref( $event->{item} ) eq 'HASH' ? $event->{item}{type} : undef,
+                        },
+                    );
+                    next if !$on_progress;
+                    my @lines = $self->codex_progress_lines_for_event($event);
+                    for my $progress_line (@lines) {
+                        my $ok = eval { $on_progress->($progress_line) };
+                        if ( !$ok || $@ ) {
+                            my $error = $@;
+                            chomp $error;
+                            $error ||= 'Codex progress callback failed';
+                            $self->append_listener_audit_event(
+                                $self->listener_paths,
+                                'codex.progress.callback_failed',
+                                {
+                                    error => $error,
+                                    line  => $progress_line,
+                                },
+                            );
+                        }
+                    }
+                    next;
+                }
+            }
+            push @stderr_lines, $line;
+        }
     }
-    close $json_fh;
+    waitpid( $pid, 0 );
     my $exit = $?;
-    die "Codex resume failed for Telegram reply\n" if $exit == -1 || ( $exit >> 8 ) != 0;
-    my $reply = $self->read_text_file($output_file);
-    unlink $output_file;
+    $self->write_text_file( $stderr_file, join( "\n", @stderr_lines ) . ( @stderr_lines ? "\n" : q{} ) );
+    my $reply = -f $output_file ? $self->read_text_file($output_file) : q{};
     $reply =~ s/\A\s+//;
     $reply =~ s/\s+\z//;
+    my $stderr_tail = join "\n", @stderr_lines[ @stderr_lines > 12 ? $#stderr_lines - 11 : 0 .. $#stderr_lines ];
+    $stderr_tail =~ s/\s+\z// if defined $stderr_tail;
+    $self->append_listener_audit_event(
+        $self->listener_paths,
+        'codex.resume.completed',
+        {
+            session_id  => $session_id,
+            exit_code   => $exit == -1 ? -1 : ( $exit >> 8 ),
+            signal      => $exit == -1 ? undef : ( $exit & 127 ),
+            reply_bytes => length($reply),
+            stderr_tail => $stderr_tail,
+            output_file => $output_file,
+            stderr_file => $stderr_file,
+        },
+    );
+    my $exit_code = $exit == -1 ? -1 : ( $exit >> 8 );
+    my $signal = $exit == -1 ? 0 : ( $exit & 127 );
+    if ( $exit == -1 || $exit_code != 0 || $signal != 0 || $reply eq q{} ) {
+        my $message = $reply eq q{}
+          ? 'Codex resume returned an empty Telegram reply'
+          : 'Codex resume failed for Telegram reply';
+        $message .= sprintf ' (exit=%s signal=%s)', $exit_code, $signal;
+        $message .= "\nStderr tail:\n$stderr_tail" if defined $stderr_tail && $stderr_tail ne q{};
+        unlink $output_file if -f $output_file;
+        unlink $stderr_file if -f $stderr_file;
+        die "$message\n";
+    }
+    unlink $output_file if -f $output_file;
+    unlink $stderr_file if -f $stderr_file;
     return $reply;
 }
 
@@ -1686,40 +1899,61 @@ sub listener_progress_interval_seconds {
 }
 
 sub start_listener_verbose_reporter {
-    my ( $self, $summary ) = @_;
+    my ( $self, $summary, %args ) = @_;
     return undef if !$self->listener_should_send_typing( $summary, 'codex-session' );
     return undef if !defined $summary->{chat} || !defined $summary->{chat}{id};
     return undef if !defined $summary->{message_id};
     my $chat_id = $summary->{chat}{id};
     my $reply_to_message_id = $summary->{message_id};
+    my $on_error = $args{on_error};
     my @lines;
     my $message_id;
+    my $disabled = 0;
     my $emit = sub {
         my ($line) = @_;
+        return 0 if $disabled;
         return 1 if !defined $line || $line eq q{};
         push @lines, $line if !@lines || $lines[-1] ne $line;
         @lines = $self->listener_verbose_trimmed_lines(@lines);
         my $text = $self->listener_verbose_text(@lines);
         if ( !defined $message_id ) {
-            my $sent = $self->telegram_post(
-                'sendMessage',
-                {
-                    chat_id             => $chat_id,
-                    reply_to_message_id => $reply_to_message_id,
-                    text                => $text,
-                }
-            );
+            my $sent = eval {
+                $self->telegram_post(
+                    'sendMessage',
+                    {
+                        chat_id             => $chat_id,
+                        reply_to_message_id => $reply_to_message_id,
+                        text                => $text,
+                    }
+                );
+            };
+            if ( my $error = $@ ) {
+                chomp $error;
+                $disabled = 1;
+                $on_error->($error) if $on_error;
+                return 0;
+            }
             $message_id = $sent->{result}{message_id} if $sent && ref($sent) eq 'HASH' && $sent->{result};
             return 1;
         }
-        $self->telegram_post(
-            'editMessageText',
-            {
-                chat_id    => $chat_id,
-                message_id => $message_id,
-                text       => $text,
-            }
-        );
+        my $ok = eval {
+            $self->telegram_post(
+                'editMessageText',
+                {
+                    chat_id    => $chat_id,
+                    message_id => $message_id,
+                    text       => $text,
+                }
+            );
+            return 1;
+        };
+        if ( !$ok || $@ ) {
+            my $error = $@;
+            chomp $error;
+            $disabled = 1;
+            $on_error->($error) if $on_error;
+            return 0;
+        }
         return 1;
     };
     return {
@@ -1959,6 +2193,16 @@ sub update_needs_listener_reply {
     return 0;
 }
 
+sub summary_has_media {
+    my ( $self, $summary ) = @_;
+    return 1 if $summary->{photo};
+    return 1 if $summary->{document};
+    return 1 if $summary->{audio};
+    return 1 if $summary->{video};
+    return 1 if $summary->{voice};
+    return 0;
+}
+
 sub resolve_token {
     my ( $self, $explicit ) = @_;
     my $token = defined $explicit && $explicit ne q{}
@@ -2027,7 +2271,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-        agent   => 'telegram-codex/' . ( $self->env_value('VERSION') || '0.29' ),
+            agent   => 'telegram-codex/' . ( $self->env_value('VERSION') || '0.30' ),
         timeout => 60,
     );
     return $ua;

@@ -1,3 +1,14 @@
+0.30 2026-05-22
+    - hardened the managed Telegram reply worker so verbose-progress reporter
+      failures and progress-callback failures no longer abort the active
+      Codex reply mid-operation
+    - added per-session audit support through
+      `dashboard telegram-codex.start --audit`, writing
+      `~/.telegram-codex/<session-id>/audit.enabled` and `audit.jsonl`
+    - upgraded the real `codex exec resume` path to capture stderr tail,
+      exit status, and streamed progress events so empty mid-run failures can
+      be diagnosed instead of collapsing into a generic reply error
+
 0.29 2026-05-21
     - replaced the placeholder Telegram progress heartbeat with real
       step-by-step verbose streaming from `codex exec resume --json`
