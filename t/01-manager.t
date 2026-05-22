@@ -1571,6 +1571,11 @@ sub new_manager {
     my $runtime = tempdir( CLEANUP => 1 );
     my @post_calls;
     my @resume_calls;
+    my @tmux_sends;
+    my $transcript_root = File::Spec->catdir( $runtime, '.codex', 'sessions', '2026', '05', '22' );
+    make_path($transcript_root);
+    my $transcript_file = File::Spec->catfile( $transcript_root, 'rollout-2026-05-22T19-00-00-paired-session-target.jsonl' );
+    _write( $transcript_file, q{} );
     my $manager = new_manager(
         cwd  => $runtime,
         home => $runtime,
@@ -1599,6 +1604,10 @@ sub new_manager {
             push @resume_calls, [@_];
             return 'unexpected';
         },
+        tmux_send_runner => sub {
+            push @tmux_sends, [@_];
+            return 1;
+        },
         post_runner => sub {
             my ( $method, $params ) = @_;
             push @post_calls, [ $method, $params ];
@@ -1609,17 +1618,20 @@ sub new_manager {
         },
     );
     $manager->set_listener_audit_enabled( 'pairing-session', 1 );
+    $manager->write_codex_target_session_id( 'pairing-session', 'paired-session-target' );
     my $result = $manager->execute_check_messages( 'pairing-session', 1, 0 );
     my $state = $manager->read_listener_pairing_state( $manager->listener_paths_for_session('pairing-session') );
     my $audit = $manager->read_text_file( $manager->listener_paths_for_session('pairing-session')->{audit_file} );
     is( $result->{processed}, 1, 'pairing gate still records the unpaired inbound message' );
     is( $result->{replied}, 1, 'pairing gate sends one pairing command reply for the first unpaired message' );
     is( scalar @resume_calls, 0, 'pairing gate does not resume Codex before the session is paired' );
+    is( scalar @tmux_sends, 0, 'pairing gate does not inject the unpaired trigger message into a live tmux-backed Codex session' );
     is( $post_calls[0][0], 'sendMessage', 'pairing gate sends the pairing command through a normal Telegram reply' );
     like( $post_calls[0][1]{text}, qr/\Ad2 telegram-codex\.pair [0-9a-f]{16}\z/, 'pairing gate replies with the local pairing command and a random hex code' );
     is( $state->{pending_chat_id}, 707, 'pairing gate records the pending chat id for the first unpaired user' );
     is( $state->{pairing_code}, ( split / /, $post_calls[0][1]{text} )[-1], 'pairing gate persists the same challenge code it returned to Telegram' );
     like( $audit, qr/"type"\s*:\s*"pairing\.challenge\.sent"/, 'pairing gate records the challenge send decision in the session audit' );
+    is( $manager->read_text_file($transcript_file), q{}, 'pairing gate does not append the unpaired trigger message into the shared Codex transcript' );
 }
 
 {

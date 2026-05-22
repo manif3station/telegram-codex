@@ -15,6 +15,17 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-308`:
+  - `Files=6, Tests=603`
+  - `Result: PASS`
+- Docker covered gate for `DD-308`:
+  - `Files=6, Tests=603`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Pairing-boundary regressions:
+  - the first unpaired trigger message still gets exactly one local `d2 telegram-codex.pair <hexcode>` reply
+  - unpaired trigger messages now prove zero Codex resume calls, zero live tmux injections, and zero shared-transcript writes
+  - paired chats still resume normal Codex-session reply behavior after local pairing
 - Docker functional gate for `DD-307`:
   - `Files=6, Tests=601`
   - `Result: PASS`

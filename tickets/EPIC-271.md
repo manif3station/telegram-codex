@@ -6,3 +6,4 @@ Add a governed `telegram-codex` skill that bridges Telegram Bot API into a local
 
 The current follow-on slice also hardens that live shared session model so stale long-lived `codex resume` processes do not capture Telegram turns, and so a failed live-pane injection falls back promptly to detached resume instead of leaving Telegram stuck behind the initial verbose kickoff line.
 That hardening now also covers the case where the injected Telegram turn never appears in the live transcript and the case where the user turn appears but no final assistant answer follows.
+The current slice also tightens the pairing boundary so the first unpaired Telegram trigger message only returns the local pair command and cannot leak into the live Codex TUI or shared transcript.

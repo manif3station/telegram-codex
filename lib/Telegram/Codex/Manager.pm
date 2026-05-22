@@ -492,9 +492,6 @@ sub execute_check_messages {
             $processed++;
             my $message = $update->{message} || $update->{edited_message} || {};
             my $chat_id = $message->{chat}{id};
-            my $reply_mode = $self->listener_reply_mode_for_update($reply_text);
-            $summary = $self->hydrate_summary_media_paths($summary)
-              if $reply_mode eq 'codex-session';
             my $pairing_action = $self->listener_pairing_action( $summary, $paths );
             if ( !$pairing_action->{allow} ) {
                 if ( defined $chat_id && $pairing_action->{reply_message} ) {
@@ -531,6 +528,9 @@ sub execute_check_messages {
                 }
                 next;
             }
+            my $reply_mode = $self->listener_reply_mode_for_update($reply_text);
+            $summary = $self->hydrate_summary_media_paths($summary)
+              if $reply_mode eq 'codex-session';
             if ( defined $chat_id && $self->update_needs_listener_reply($summary) ) {
                 my $sent = eval {
                     my $runner = sub {

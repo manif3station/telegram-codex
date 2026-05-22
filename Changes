@@ -1,3 +1,12 @@
+0.40 2026-05-22
+    - moved the Telegram pairing decision ahead of reply-mode selection and
+      media hydration so an unpaired trigger message cannot enter any
+      Codex-session preparation path
+    - added direct coverage proving the first unpaired trigger message
+      still gets the local pair command reply while producing zero Codex
+      resume calls, zero live tmux injections, and zero shared-transcript
+      writes
+
 0.39 2026-05-22
     - hardened live Telegram/TUI sync so stale long-lived `codex resume`
       processes do not capture Telegram turns when a fresher tmux-backed
