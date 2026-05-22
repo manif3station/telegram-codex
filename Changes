@@ -1,3 +1,13 @@
+0.32 2026-05-22
+    - widened managed Telegram task detection so requests like `Run all the
+      tests and check if any test not good enough` now open the verbose
+      progress stream instead of skipping straight to the final reply
+    - added an immediate `Resuming active Codex session` verbose kickoff
+      line before richer `codex exec resume --json` events arrive, so task
+      requests show progress even when the first streamed event is delayed
+    - formatted `thread.started` progress as `Session resumed` so minimal
+      Codex event streams still surface useful Telegram progress
+
 0.31 2026-05-22
     - made `dashboard telegram-codex.start` recycle any already-running
       per-session `check-message <session-id>` worker before restarting the

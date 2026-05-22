@@ -1502,7 +1502,7 @@ sub new_manager {
                         update_id => 301,
                         message   => {
                             message_id => 44,
-                            text       => 'Finish all tasks with all gates',
+                            text       => 'Run all the tests and check if any test not good enough',
                             chat       => { id => 66, type => 'private' },
                         },
                     },
@@ -1550,6 +1550,7 @@ sub new_manager {
     is( scalar @resume_calls, 1, 'task-style collector-owned check-message resumes Codex once when the first reply is substantive' );
     is( $post_calls[1][0], 'sendMessage', 'task-style collector-owned check-message sends a verbose progress message before the final reply' );
     like( $post_calls[1][1]{text}, qr/Codex verbose/, 'task-style collector-owned check-message opens the progress stream with a verbose trace message' );
+    like( $post_calls[1][1]{text}, qr/Resuming active Codex session/, 'task-style collector-owned check-message emits an immediate verbose kickoff line before richer Codex events arrive' );
     ok( scalar( grep { $_->[0] eq 'editMessageText' } @post_calls ) >= 1, 'task-style collector-owned check-message updates the verbose trace in place' );
     like( join( "\n---\n", @texts ), qr/Agent: Planning the next step/, 'task-style collector-owned check-message streams real agent events into Telegram' );
     like( join( "\n---\n", @texts ), qr/Running command: \/bin\/bash -lc pwd/, 'task-style collector-owned check-message streams real command-start events into Telegram' );
@@ -1828,6 +1829,11 @@ sub new_manager {
 {
     my $manager = new_manager;
     is_deeply(
+        [ $manager->codex_progress_lines_for_event( { type => 'thread.started' } ) ],
+        ['Session resumed'],
+        'codex_progress_lines_for_event formats thread.started'
+    );
+    is_deeply(
         [ $manager->codex_progress_lines_for_event( { type => 'turn.started' } ) ],
         ['Turn started'],
         'codex_progress_lines_for_event formats turn.started'
@@ -1851,6 +1857,22 @@ sub new_manager {
         [ $manager->codex_progress_lines_for_event( { type => 'item.completed', item => { type => 'unknown' } } ) ],
         [],
         'codex_progress_lines_for_event returns no lines for unrelated event payloads'
+    );
+}
+
+{
+    my $manager = new_manager;
+    ok(
+        $manager->telegram_message_requires_completion( { text => 'Run all the tests and check if any test not good enough' } ),
+        'telegram_message_requires_completion recognizes run-and-check task requests as long-running work'
+    );
+    ok(
+        $manager->telegram_message_requires_completion( { text => 'Review the current implementation and verify the release gate' } ),
+        'telegram_message_requires_completion recognizes review-and-verify task requests as long-running work'
+    );
+    ok(
+        !$manager->telegram_message_requires_completion( { text => 'What is the status?' } ),
+        'telegram_message_requires_completion does not force verbose task streaming for simple status questions'
     );
 }
 
@@ -2552,6 +2574,7 @@ for ARG in "\$@"; do
   PREV="\$ARG"
 done
 printf '%s\n' "\$@" > "$args_file"
+printf '%s\n' '{"type":"thread.started"}'
 printf '%s\n' '{"type":"turn.started"}'
 printf '%s\n' '{"type":"item.started","item":{"type":"command_execution","command":"/bin/pwd"}}'
 printf '%s\n' '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/pwd","exit_code":0,"aggregated_output":"/tmp\\n"}}'
@@ -2599,6 +2622,7 @@ EOF
     is_deeply(
         \@progress,
         [
+            'Session resumed',
             'Turn started',
             'Running command: /bin/pwd',
             'Command finished (exit 0): /bin/pwd',

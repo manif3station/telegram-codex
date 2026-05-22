@@ -15,6 +15,17 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-300`:
+  - `Files=6, Tests=484`
+  - `Result: PASS`
+- Docker covered gate for `DD-300`:
+  - `Files=6, Tests=484`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Verbose task-detection regressions:
+  - managed Telegram task requests now classify broader `run`, `check`, `review`, `verify`, `test`, `finish`, and `fix` phrasing as long-running completion work
+  - the verbose trace now emits `Resuming active Codex session` immediately before richer streamed Codex JSON events arrive
+  - `thread.started` is now rendered as `Session resumed` so minimal event streams still surface visible progress
 - Docker functional gate for `DD-299`:
   - `Files=6, Tests=479`
   - `Result: PASS`

@@ -492,6 +492,7 @@ sub execute_check_messages {
                                 },
                             )
                           : undef;
+                        eval { $reporter->{emit}->('Resuming active Codex session') } if $reporter;
                         my $reply_message = $self->listener_reply_message_for_update(
                             $summary,
                             $reply_text,
@@ -2023,6 +2024,7 @@ sub codex_progress_lines_for_event {
     my ( $self, $event ) = @_;
     return () if !$event || ref($event) ne 'HASH';
     my $type = $event->{type} || q{};
+    return ('Session resumed') if $type eq 'thread.started';
     return ('Turn started') if $type eq 'turn.started';
     return ('Turn completed') if $type eq 'turn.completed';
     return () if $type !~ /\Aitem\.(?:started|completed)\z/;
@@ -2097,7 +2099,7 @@ sub telegram_message_requires_completion {
     my ( $self, $summary ) = @_;
     my $body = join q{ }, grep { defined $_ && $_ ne q{} } ( $summary->{text}, $summary->{caption} );
     return 0 if $body eq q{};
-    return $body =~ /\b(?:finish|complete|continue|do it|fix|investigate|update|implement|all gates|all tasks|run it)\b/i ? 1 : 0;
+    return $body =~ /\b(?:finish|complete|continue|do it|fix|investigate|update|implement|run|check|review|audit|verify|inspect|analy[sz]e|test|all gates|all tasks)\b/i ? 1 : 0;
 }
 
 sub telegram_reply_is_promise_placeholder {
@@ -2310,7 +2312,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-            agent   => 'telegram-codex/' . ( $self->env_value('VERSION') || '0.31' ),
+            agent   => 'telegram-codex/' . ( $self->env_value('VERSION') || '0.32' ),
         timeout => 60,
     );
     return $ua;
