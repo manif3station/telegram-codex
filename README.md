@@ -46,6 +46,8 @@ When `dashboard telegram-codex.start` runs with `TELEGRAM_BOT_TOKEN` and `TELEGR
 8. recycles any already-running `check-message <session-id>` worker for that session so the new managed behavior replaces stale long-lived code immediately
 9. launches the real Codex binary
 
+During a managed Telegram reply, `telegram-codex` now also hydrates the reply prompt from recent persisted rows in that same saved Codex session transcript and then journals the inbound Telegram turn plus the outbound reply back into the transcript. That keeps later Telegram follow-up work and later resumed TUI history attached to one shared persisted Codex session instead of leaving Telegram as an isolated side channel.
+
 `dashboard telegram-codex.start --version` is a pure metadata query that proxies the real underlying Codex CLI version output DD expects. DD can probe it safely without creating or restarting collectors.
 Successful managed startup now hands off with `exec`, so the wrapper process does not stay resident as an extra long-lived `cli/start` parent after Codex takes over. Ambient workspace `OLLAMA_MODEL` is no longer treated as an automatic provider override for Telegram-managed startup. If Telegram-owned startup really needs the Ollama launch profile, set `TELEGRAM_CODEX_OLLAMA_MODEL` explicitly.
 If you need runtime diagnostics for a broken managed reply, run:
@@ -216,6 +218,7 @@ The skill keeps per-session Telegram state under:
 - `~/.telegram-codex/<session-id>/audit.jsonl`
 
 `codex.session` stores the actual Codex session that Telegram replies should resume. That target may be different from the collector session name when `TICKET_REF` maps the workspace to a saved Codex session.
+The matching `~/.codex/sessions/...` transcript for that target session is now reused as shared persisted history for managed Telegram replies and receives readable Telegram user and assistant journal rows after each managed exchange.
 `pairing.json` stores the paired Telegram chat id or the pending one-time local pairing challenge for that session.
 `listener.offset` is healed from `listener.inbox.jsonl` immediately when inbox-ledger recovery proves a newer next offset.
 `downloads/` stores inbound media that the managed collector downloaded for Codex inspection before reply generation.

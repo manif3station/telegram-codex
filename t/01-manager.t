@@ -2963,6 +2963,148 @@ sub new_manager {
 }
 
 {
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $session_id = '019e-session-sync-demo';
+    my $session_dir = File::Spec->catdir( $runtime, '.codex', 'sessions', '2026', '05', '22' );
+    make_path($session_dir);
+    my $session_file = File::Spec->catfile( $session_dir, "rollout-2026-05-22T10-00-00-$session_id.jsonl" );
+    my @rows = (
+        {
+            timestamp => '2026-05-22T10:00:00Z',
+            type      => 'response_item',
+            payload   => {
+                type    => 'message',
+                role    => 'user',
+                content => [
+                    {
+                        type => 'input_text',
+                        text => 'TUI side says hello',
+                    },
+                ],
+            },
+        },
+        {
+            timestamp => '2026-05-22T10:00:10Z',
+            type      => 'response_item',
+            payload   => {
+                type    => 'message',
+                role    => 'assistant',
+                content => [
+                    {
+                        type => 'output_text',
+                        text => 'TUI side replied hello',
+                    },
+                ],
+            },
+        },
+        {
+            timestamp => '2026-05-22T10:01:00Z',
+            type      => 'response_item',
+            payload   => {
+                type    => 'message',
+                role    => 'user',
+                content => [
+                    {
+                        type => 'input_text',
+                        text => join(
+                            "\n",
+                            'A Telegram user sent a message to this active Codex session.',
+                            'Reply as this Codex session, using the current conversation context.',
+                            'chat_id=398296603',
+                            'message_id=77',
+                            'text=Telegram asks here',
+                            'caption=',
+                        ),
+                    },
+                ],
+            },
+        },
+    );
+    _write( $session_file, join( q{}, map { encode_json($_) . "\n" } @rows ) );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_TARGET_SESSION_ID => $session_id,
+        },
+    );
+    my @messages = $manager->codex_session_recent_messages($session_id);
+    is( $messages[0]{text}, 'TUI side says hello', 'codex_session_recent_messages keeps normal TUI user messages' );
+    is( $messages[1]{text}, 'TUI side replied hello', 'codex_session_recent_messages keeps normal TUI assistant messages' );
+    is( $messages[2]{text}, "[Telegram chat 398296603 message 77]\nTelegram asks here", 'codex_session_recent_messages normalizes old raw Telegram bridge prompts into readable transcript lines' );
+    my $prompt = $manager->codex_session_reply_prompt(
+        {
+            message_id => 88,
+            text       => 'Please continue from Telegram',
+            caption    => q{},
+            chat       => { id => 398296603 },
+        }
+    );
+    like( $prompt, qr/Recent shared Codex session transcript:/, 'codex_session_reply_prompt includes recent persisted Codex transcript context' );
+    like( $prompt, qr/user: TUI side says hello/, 'codex_session_reply_prompt carries recent TUI-side user history into Telegram replies' );
+    like( $prompt, qr/assistant: TUI side replied hello/, 'codex_session_reply_prompt carries recent TUI-side assistant history into Telegram replies' );
+    like( $prompt, qr/user: \[Telegram chat 398296603 message 77\]\nTelegram asks here/, 'codex_session_reply_prompt carries normalized older Telegram turns too' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $session_dir = File::Spec->catdir( $runtime, '.codex', 'sessions', '2026', '05', '22' );
+    make_path($session_dir);
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+    );
+    is( $manager->codex_session_transcript_path('019e-session-missing'), undef, 'codex_session_transcript_path returns undef when the Codex session tree exists but no matching transcript file is present' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $session_id = '019e-session-sync-write';
+    my $session_dir = File::Spec->catdir( $runtime, '.codex', 'sessions', '2026', '05', '22' );
+    make_path($session_dir);
+    my $session_file = File::Spec->catfile( $session_dir, "rollout-2026-05-22T10-00-00-$session_id.jsonl" );
+    _write( $session_file, q{} );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+    );
+    my $summary = {
+        message_id => 99,
+        text       => 'Telegram asks from phone',
+        caption    => q{},
+        chat       => { id => 398296603 },
+        document   => { file_name => 'report.pdf', local_path => '/tmp/report.pdf' },
+    };
+    ok( $manager->sync_telegram_exchange_to_codex_session( $session_id, $summary, 'Reply sent back to Telegram' ), 'sync_telegram_exchange_to_codex_session appends Telegram exchange rows into the target Codex session transcript' );
+    ok( !$manager->sync_telegram_exchange_to_codex_session( $session_id, $summary, 'Reply sent back to Telegram' ), 'sync_telegram_exchange_to_codex_session deduplicates the same Telegram message marker on later runs' );
+    my $content = $manager->read_text_file($session_file);
+    like( $content, qr/\[Telegram chat 398296603 message 99\]\\nTelegram asks from phone\\n\[document\] \/tmp\/report\.pdf/s, 'sync_telegram_exchange_to_codex_session appends a readable Telegram user message into the Codex session file' );
+    like( $content, qr/\[Telegram reply chat 398296603 message 99\]\\nReply sent back to Telegram/s, 'sync_telegram_exchange_to_codex_session appends the Telegram-facing assistant reply into the Codex session file' );
+}
+
+{
+    my $manager = new_manager;
+    my @lines = $manager->telegram_session_media_summary_lines(
+        {
+            photo => { local_path => '/tmp/photo.png' },
+            audio => { title => 'demo tone' },
+            video => { file_id => 'video-file-id' },
+            voice => { file_id => 'voice-file-id' },
+        }
+    );
+    is_deeply(
+        \@lines,
+        [
+            '[photo] /tmp/photo.png',
+            '[audio] demo tone',
+            '[video] video-file-id',
+            '[voice] voice-file-id',
+        ],
+        'telegram_session_media_summary_lines covers photo, audio, video, and voice attachment summary rows'
+    );
+}
+
+{
     my $manager = new_manager;
     my @descriptors = $manager->summary_media_descriptors(
         {

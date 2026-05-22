@@ -61,6 +61,7 @@ Because managed startup now recycles the old per-session worker first, `--audit`
 
 When `~/.telegram-codex/<session-id>/codex.session` exists, the collector-owned `dashboard telegram-codex.check-message <session-id>` worker automatically resumes that Codex session to generate the Telegram reply text.
 If that file is missing, the managed reply path falls back to the saved-session mapping in `~/.developer-dashboard/config/codex.json`.
+When the target session exists, managed replies also hydrate from recent persisted rows in that Codex session transcript and then append readable Telegram user and assistant turns back into the same transcript so later resumed TUI work sees the shared persisted history too.
 
 ## Collector Contract
 

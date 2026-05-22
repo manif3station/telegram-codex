@@ -1,3 +1,14 @@
+0.37 2026-05-22
+    - hydrated managed Telegram replies from recent persisted Codex session
+      transcript rows so Telegram-side follow-up work can reuse TUI-side
+      context from the same saved Codex session
+    - normalized older raw Telegram bridge prompt rows into readable
+      transcript lines before they are reused as shared context in later
+      managed replies
+    - journaled managed Telegram user and assistant turns back into the
+      target Codex session transcript so later TUI resume and Telegram
+      follow-up work share one persisted conversation history
+
 0.36 2026-05-22
     - replaced the README and usage command dump with a real step-by-step
       onboarding workflow that matches the implementation order

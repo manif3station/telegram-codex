@@ -122,6 +122,7 @@ That enables per-session audit rows in `~/.telegram-codex/<session-id>/audit.jso
 Because startup now recycles an already-running worker for that session before the collector restart, the audited code path takes effect immediately instead of leaving an old long-lived worker alive.
 
 If `codex.session` is missing later, the managed reply path falls back to the same saved-session mapping in `~/.developer-dashboard/config/codex.json` instead of blindly using the collector session id.
+When the saved Codex session exists, managed Telegram replies now also hydrate from recent persisted transcript rows for that same Codex session and then append readable Telegram user and assistant turns back into it. That keeps Telegram follow-up work and later resumed TUI history attached to one shared persisted Codex session.
 
 ## Collector-Owned Polling Loop
 
@@ -258,6 +259,7 @@ Per-session runtime state lives under:
 `listener.inbox.jsonl` keeps the per-session inbound update ledger.
 
 `codex.session` keeps the real Codex session that the collector-owned `check-message <session-id>` worker resumes to generate Telegram replies.
+The matching `~/.codex/sessions/...` transcript for that target session is now reused as the shared persisted history source for managed Telegram replies and receives readable Telegram user and assistant journal rows after each managed exchange.
 `pairing.json` keeps the paired chat id or the pending pairing challenge for that session.
 `downloads/` keeps inbound supported Telegram media that was downloaded for Codex before reply generation.
 `audit.enabled` turns on runtime audit capture for that collector session.

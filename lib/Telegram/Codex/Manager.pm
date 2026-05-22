@@ -852,6 +852,16 @@ sub now_string {
     );
 }
 
+sub now_iso8601_z {
+    my ($self) = @_;
+    my ( $sec, $min, $hour, $mday, $mon, $year ) = gmtime;
+    return sprintf(
+        "%04d-%02d-%02dT%02d:%02d:%02dZ",
+        $year + 1900,
+        $mon + 1, $mday, $hour, $min, $sec
+    );
+}
+
 sub codex_start_plan {
     my ( $self, $config, @argv ) = @_;
     my $ticket = $self->env_value('TICKET_REF');
@@ -1801,6 +1811,7 @@ sub codex_session_reply_for_update {
             %args,
         );
     }
+    $self->sync_telegram_exchange_to_codex_session( $session_id, $summary, $reply );
     return $reply;
 }
 
@@ -2237,9 +2248,19 @@ sub codex_session_reply_prompt {
     my $caption = defined $summary->{caption} ? $summary->{caption} : q{};
     my $chat_id = defined $summary->{chat} ? $summary->{chat}{id} : q{};
     my $message_id = defined $summary->{message_id} ? $summary->{message_id} : q{};
+    my $session_id = $self->resolve_codex_reply_session_id;
+    my $recent_transcript = $self->codex_session_recent_transcript_block($session_id);
     return join "\n",
         'A Telegram user sent a message to this active Codex session.',
         'Reply as this Codex session, using the current conversation context.',
+        (
+            $recent_transcript ne q{}
+            ? (
+                'Recent shared Codex session transcript:',
+                $recent_transcript,
+              )
+            : ()
+        ),
         'Return only the exact Telegram reply text. No markdown fences. No explanations. No tool narration.',
         'Do not prepend greetings, acknowledgements, or status prefaces unless the user explicitly asked for them. Start with the answer or result.',
         'Downloaded Telegram images are attached to this Codex prompt as real image inputs when available.',
@@ -2272,6 +2293,224 @@ sub codex_session_retry_prompt {
       $self->codex_session_reply_prompt($summary),
       'The prior reply was only a promise or progress update and must not be sent to Telegram.',
       'Continue the actual work in-session now and return only the final result or a concrete unresolved blocker.';
+}
+
+sub sync_telegram_exchange_to_codex_session {
+    my ( $self, $session_id, $summary, $reply ) = @_;
+    return 0 if !defined $session_id || $session_id eq q{};
+    my $path = $self->codex_session_transcript_path($session_id);
+    return 0 if !defined $path || $path eq q{};
+    my $user_text = $self->telegram_session_user_sync_text($summary);
+    my $assistant_text = $self->telegram_session_assistant_sync_text( $summary, $reply );
+    my $message_id = defined $summary->{message_id} ? $summary->{message_id} : q{};
+    my $wrote = 0;
+    if ( defined $user_text && $user_text ne q{} ) {
+        my $marker = "[Telegram chat " . ( defined $summary->{chat} ? $summary->{chat}{id} : q{} ) . " message $message_id]";
+        if (
+            $self->append_codex_session_message(
+            $path,
+            role    => 'user',
+            text    => $user_text,
+            marker  => $marker,
+            session => $session_id,
+            )
+          )
+        {
+            $wrote = 1;
+        }
+    }
+    if ( defined $assistant_text && $assistant_text ne q{} ) {
+        my $marker = "[Telegram reply chat " . ( defined $summary->{chat} ? $summary->{chat}{id} : q{} ) . " message $message_id]";
+        if (
+            $self->append_codex_session_message(
+            $path,
+            role    => 'assistant',
+            text    => $assistant_text,
+            marker  => $marker,
+            session => $session_id,
+            )
+          )
+        {
+            $wrote = 1;
+        }
+    }
+    return $wrote ? 1 : 0;
+}
+
+sub telegram_session_user_sync_text {
+    my ( $self, $summary ) = @_;
+    my $chat_id = defined $summary->{chat} ? $summary->{chat}{id} : q{};
+    my $message_id = defined $summary->{message_id} ? $summary->{message_id} : q{};
+    my @body;
+    push @body, $summary->{text} if defined $summary->{text} && $summary->{text} ne q{};
+    push @body, '[caption] ' . $summary->{caption} if defined $summary->{caption} && $summary->{caption} ne q{};
+    push @body, $self->telegram_session_media_summary_lines($summary);
+    return q{} if !@body;
+    return join "\n", "[Telegram chat $chat_id message $message_id]", @body;
+}
+
+sub telegram_session_assistant_sync_text {
+    my ( $self, $summary, $reply ) = @_;
+    return q{} if !defined $reply || $reply eq q{};
+    my $chat_id = defined $summary->{chat} ? $summary->{chat}{id} : q{};
+    my $message_id = defined $summary->{message_id} ? $summary->{message_id} : q{};
+    return join "\n", "[Telegram reply chat $chat_id message $message_id]", $reply;
+}
+
+sub telegram_session_media_summary_lines {
+    my ( $self, $summary ) = @_;
+    my @lines;
+    if ( $summary->{photo} ) {
+        push @lines, '[photo] ' . ( $summary->{photo}{local_path} || $summary->{photo}{file_id} || 'attachment' );
+    }
+    if ( $summary->{document} ) {
+        push @lines, '[document] ' . ( $summary->{document}{local_path} || $summary->{document}{file_name} || $summary->{document}{file_id} || 'attachment' );
+    }
+    if ( $summary->{audio} ) {
+        push @lines, '[audio] ' . ( $summary->{audio}{local_path} || $summary->{audio}{title} || $summary->{audio}{file_id} || 'attachment' );
+    }
+    if ( $summary->{video} ) {
+        push @lines, '[video] ' . ( $summary->{video}{local_path} || $summary->{video}{file_id} || 'attachment' );
+    }
+    if ( $summary->{voice} ) {
+        push @lines, '[voice] ' . ( $summary->{voice}{local_path} || $summary->{voice}{file_id} || 'attachment' );
+    }
+    return @lines;
+}
+
+sub codex_session_recent_transcript_block {
+    my ( $self, $session_id ) = @_;
+    my @messages = $self->codex_session_recent_messages($session_id);
+    return q{} if !@messages;
+    return join "\n", map { $_->{role} . ': ' . $_->{text} } @messages;
+}
+
+sub codex_session_recent_messages {
+    my ( $self, $session_id, %args ) = @_;
+    my $path = $self->codex_session_transcript_path($session_id);
+    return () if !defined $path || !-f $path;
+    my $limit = $args{limit} || 8;
+    my @messages;
+    for my $line ( grep { defined $_ && $_ ne q{} } split /\n/, $self->read_text_file($path) ) {
+        my $decoded = eval { decode_json($line) };
+        next if $@ || ref($decoded) ne 'HASH';
+        my $message = $self->codex_session_message_from_record($decoded);
+        next if !$message;
+        push @messages, $message;
+    }
+    @messages = @messages[ -$limit .. -1 ] if @messages > $limit;
+    return @messages;
+}
+
+sub codex_session_message_from_record {
+    my ( $self, $row ) = @_;
+    return undef if !$row || ref($row) ne 'HASH';
+    return undef if ( $row->{type} || q{} ) ne 'response_item';
+    my $payload = $row->{payload} || {};
+    return undef if ref($payload) ne 'HASH';
+    return undef if ( $payload->{type} || q{} ) ne 'message';
+    my $role = $payload->{role} || q{};
+    return undef if $role ne 'user' && $role ne 'assistant';
+    my $text = $self->codex_session_message_text_from_payload($payload);
+    return undef if !defined $text || $text eq q{};
+    return {
+        role => $role,
+        text => $text,
+    };
+}
+
+sub codex_session_message_text_from_payload {
+    my ( $self, $payload ) = @_;
+    my @parts;
+    for my $chunk ( @{ $payload->{content} || [] } ) {
+        next if ref($chunk) ne 'HASH';
+        next if !defined $chunk->{text};
+        push @parts, $chunk->{text};
+    }
+    my $text = join "\n", @parts;
+    $text =~ s/\A\s+//;
+    $text =~ s/\s+\z//;
+    return q{} if $text eq q{};
+    return $self->normalise_codex_session_message_text($text);
+}
+
+sub normalise_codex_session_message_text {
+    my ( $self, $text ) = @_;
+    return q{} if !defined $text || $text eq q{};
+    if ( $text =~ /\AA Telegram user sent a message to this active Codex session\./ ) {
+        my ($chat_id) = $text =~ /^chat_id=(.+)$/m;
+        my ($message_id) = $text =~ /^message_id=(.+)$/m;
+        my ($body) = $text =~ /^text=(.*)$/m;
+        my ($caption) = $text =~ /^caption=(.*)$/m;
+        my @lines;
+        push @lines, $body if defined $body && $body ne q{};
+        push @lines, '[caption] ' . $caption if defined $caption && $caption ne q{};
+        return join "\n", "[Telegram chat $chat_id message $message_id]", @lines if @lines;
+    }
+    return $text;
+}
+
+sub codex_session_transcript_path {
+    my ( $self, $session_id ) = @_;
+    return undef if !defined $session_id || $session_id eq q{};
+    my $root = File::Spec->catdir( $self->resolve_path('~/.codex'), 'sessions' );
+    return undef if !-d $root;
+    my @matches = sort glob File::Spec->catfile( $root, '*', '*', '*', "*-$session_id.jsonl" );
+    return $matches[-1] if @matches;
+    return undef;
+}
+
+sub append_codex_session_message {
+    my ( $self, $path, %args ) = @_;
+    return 0 if !defined $path || $path eq q{};
+    my $role = $args{role} || q{};
+    my $text = $args{text};
+    my $marker = $args{marker} || q{};
+    return 0 if $text !~ /\S/;
+    if ( $marker ne q{} && -f $path ) {
+        my $existing = $self->read_text_file($path);
+        return 0 if index( $existing, $marker ) >= 0;
+    }
+    my $timestamp = $self->now_iso8601_z;
+    my $row = {
+        timestamp => $timestamp,
+        type      => 'response_item',
+        payload   => {
+            type    => 'message',
+            role    => $role,
+            content => [
+                {
+                    type => $role eq 'assistant' ? 'output_text' : 'input_text',
+                    text => $text,
+                },
+            ],
+        },
+    };
+    my $event = $role eq 'assistant'
+      ? {
+            timestamp => $timestamp,
+            type      => 'event_msg',
+            payload   => {
+                type    => 'agent_message',
+                message => $text,
+            },
+        }
+      : {
+            timestamp => $timestamp,
+            type      => 'event_msg',
+            payload   => {
+                type         => 'user_message',
+                message      => $text,
+                images       => [],
+                local_images => [],
+                text_elements => [],
+            },
+        };
+    open my $fh, '>>', $path or die "Unable to append $path: $!";
+    print {$fh} encode_json($row) . "\n";
+    print {$fh} encode_json($event) . "\n";
+    close $fh or die "Unable to close $path: $!";
+    return 1;
 }
 
 sub telegram_message_requires_completion {

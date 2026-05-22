@@ -15,6 +15,17 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-305`:
+  - `Files=6, Tests=545`
+  - `Result: PASS`
+- Docker covered gate for `DD-305`:
+  - `Files=6, Tests=545`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Shared-transcript regressions:
+  - managed Telegram reply prompts now hydrate from recent persisted Codex session transcript rows for the saved session target
+  - older raw Telegram bridge prompt rows are normalized into readable transcript lines before being reused as shared context
+  - managed Telegram user and assistant turns are appended into the target Codex session transcript in readable form with deduplication markers
 - Docker functional gate for `DD-304`:
   - `Files=6, Tests=532`
   - `Result: PASS`
