@@ -1586,12 +1586,41 @@ sub listener_pairing_action {
     my ( $self, $summary, $paths ) = @_;
     $paths ||= $self->listener_paths;
     my $pairing_disabled = $self->env_value('TELEGRAM_CODEX_DISABLE_PAIRING') || q{};
-    return { allow => 1 } if $pairing_disabled =~ /\A(?:1|true|yes|on)\z/i;
+    if ( $pairing_disabled =~ /\A(?:1|true|yes|on)\z/i ) {
+        $self->append_listener_audit_event(
+            $paths,
+            'pairing.allowed',
+            {
+                reason  => 'disabled',
+                chat_id => defined $summary->{chat} ? $summary->{chat}{id} : undef,
+            },
+        );
+        return { allow => 1 };
+    }
     my $chat_id = defined $summary->{chat} ? $summary->{chat}{id} : undef;
-    return { allow => 1 } if !defined $chat_id;
+    if ( !defined $chat_id ) {
+        $self->append_listener_audit_event(
+            $paths,
+            'pairing.allowed',
+            {
+                reason => 'missing-chat-id',
+            },
+        );
+        return { allow => 1 };
+    }
     my $state = $self->read_listener_pairing_state($paths);
     if ( defined $state->{paired_chat_id} && $state->{paired_chat_id} ne q{} ) {
-        return { allow => 1 } if $chat_id == $state->{paired_chat_id};
+        if ( $chat_id == $state->{paired_chat_id} ) {
+            $self->append_listener_audit_event(
+                $paths,
+                'pairing.allowed',
+                {
+                    chat_id => $chat_id,
+                    reason  => 'paired-chat',
+                },
+            );
+            return { allow => 1 };
+        }
         $self->append_listener_audit_event(
             $paths,
             'pairing.ignored',

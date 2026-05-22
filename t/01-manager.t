@@ -1605,8 +1605,10 @@ sub new_manager {
             };
         },
     );
+    $manager->set_listener_audit_enabled( 'pairing-session', 1 );
     my $result = $manager->execute_check_messages( 'pairing-session', 1, 0 );
     my $state = $manager->read_listener_pairing_state( $manager->listener_paths_for_session('pairing-session') );
+    my $audit = $manager->read_text_file( $manager->listener_paths_for_session('pairing-session')->{audit_file} );
     is( $result->{processed}, 1, 'pairing gate still records the unpaired inbound message' );
     is( $result->{replied}, 1, 'pairing gate sends one pairing command reply for the first unpaired message' );
     is( scalar @resume_calls, 0, 'pairing gate does not resume Codex before the session is paired' );
@@ -1614,6 +1616,7 @@ sub new_manager {
     like( $post_calls[0][1]{text}, qr/\Ad2 telegram-codex\.pair [0-9a-f]{16}\z/, 'pairing gate replies with the local pairing command and a random hex code' );
     is( $state->{pending_chat_id}, 707, 'pairing gate records the pending chat id for the first unpaired user' );
     is( $state->{pairing_code}, ( split / /, $post_calls[0][1]{text} )[-1], 'pairing gate persists the same challenge code it returned to Telegram' );
+    like( $audit, qr/"type"\s*:\s*"pairing\.challenge\.sent"/, 'pairing gate records the challenge send decision in the session audit' );
 }
 
 {
@@ -1908,6 +1911,64 @@ sub new_manager {
     is( $result->{replied}, 0, 'paired-session security ignores messages from unpaired chats after pairing is complete' );
     is( scalar @resume_calls, 0, 'paired-session security does not resume Codex for outsider chats' );
     is( scalar @post_calls, 0, 'paired-session security does not reply to outsider chats' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_DISABLE_PAIRING => 1,
+            TELEGRAM_BOT_TOKEN             => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR     => $runtime,
+            CODEX_SESSION_ID               => 'pairing-disabled-session',
+        },
+    );
+    my $paths = $manager->listener_paths_for_session('pairing-disabled-session');
+    $manager->set_listener_audit_enabled( 'pairing-disabled-session', 1 );
+    my $result = $manager->listener_pairing_action(
+        {
+            chat       => { id => 919 },
+            update_id  => 99001,
+            message_id => 9901,
+            text       => 'pairing bypassed',
+        },
+        $paths,
+    );
+    my $audit = $manager->read_text_file( $paths->{audit_file} );
+    is( $result->{allow}, 1, 'listener_pairing_action allows the chat when pairing is explicitly disabled' );
+    like( $audit, qr/"type"\s*:\s*"pairing\.allowed"/, 'listener_pairing_action records pairing.allowed in the audit when pairing is explicitly disabled' );
+    like( $audit, qr/"reason"\s*:\s*"disabled"/, 'listener_pairing_action records the disabled reason in the audit when pairing is bypassed' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_DISABLE_PAIRING => 0,
+            TELEGRAM_BOT_TOKEN             => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR     => $runtime,
+            CODEX_SESSION_ID               => 'pairing-missing-chat-session',
+        },
+    );
+    my $paths = $manager->listener_paths_for_session('pairing-missing-chat-session');
+    $manager->set_listener_audit_enabled( 'pairing-missing-chat-session', 1 );
+    my $result = $manager->listener_pairing_action(
+        {
+            chat       => {},
+            update_id  => 99002,
+            message_id => 9902,
+            text       => 'no chat id',
+        },
+        $paths,
+    );
+    my $audit = $manager->read_text_file( $paths->{audit_file} );
+    is( $result->{allow}, 1, 'listener_pairing_action allows updates with no chat id' );
+    like( $audit, qr/"type"\s*:\s*"pairing\.allowed"/, 'listener_pairing_action records pairing.allowed in the audit when chat id is missing' );
+    like( $audit, qr/"reason"\s*:\s*"missing-chat-id"/, 'listener_pairing_action records the missing-chat-id reason in the audit' );
 }
 
 {
