@@ -8,3 +8,4 @@ The current follow-on slice also hardens that live shared session model so stale
 That hardening now also covers the case where the injected Telegram turn never appears in the live transcript and the case where the user turn appears but no final assistant answer follows.
 The current slice also tightens the pairing boundary so the first unpaired Telegram trigger message only returns the local pair command and cannot leak into the live Codex TUI or shared transcript.
 The latest follow-on slice also makes the managed `telegram-codex.start` launch path prepend `--dangerously-bypass-approvals-and-sandbox` so direct Telegram-owned Codex startup uses the same non-interactive execution contract as managed resumed reply subprocesses.
+The newest follow-on slice keeps Telegram `typing...` alive for TUI-originated mirrored turns too, including multi-poll shared-transcript turns where the final assistant answer does not arrive until a later collector cycle.

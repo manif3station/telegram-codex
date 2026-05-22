@@ -2304,10 +2304,17 @@ sub process_tui_live_outbound_transcript {
                 },
             );
             my $typing_error = $self->send_telegram_typing_action_for_chat($chat_id);
+            my $typing_guard = $self->start_listener_typing_guard(
+                {
+                    chat => { id => $chat_id },
+                    text => $event->{text},
+                }
+            );
             $state->{active} = {
                 chat_id       => $chat_id,
                 reporter      => $reporter,
                 seen_progress => {},
+                typing_guard  => $typing_guard,
             };
             eval { $reporter->{emit}->('Resuming active Codex session') } if $reporter;
             next;
@@ -2327,6 +2334,9 @@ sub process_tui_live_outbound_transcript {
                 reply_message => $event->{text},
             );
             eval { $reporter->{finish}->() } if $reporter;
+            if ( my $typing_guard = $state->{active}{typing_guard} ) {
+                eval { $typing_guard->() };
+            }
             $state->{active} = undef;
         }
     }

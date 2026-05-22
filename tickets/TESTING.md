@@ -233,6 +233,16 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
   - the collector-owned `dashboard telegram-codex.check-message <session-id>` worker now keeps the typing guard alive through the final outbound Telegram send attempt instead of stopping as soon as Codex finishes generating reply text
   - typing guard cleanup still runs when managed Codex reply generation fails
   - typing guard cleanup still runs when the final Telegram send fails
+- TUI-mirror typing regressions:
+  - TUI-originated mirrored turns now keep the same Telegram typing guard active until the final outbound Telegram reply send completes
+  - the TUI-originated typing guard stays alive across later transcript polls when the final assistant turn does not arrive in the first collector cycle
+- Docker functional gate for `DD-310`:
+  - `Files=6, Tests=618`
+  - `Result: PASS`
+- Docker covered gate for `DD-310`:
+  - `Files=6, Tests=618`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
 - Docker functional gate for `DD-288`:
   - `Files=6, Tests=327`
   - `Result: PASS`

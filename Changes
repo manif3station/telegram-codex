@@ -1,3 +1,12 @@
+0.42 2026-05-23
+    - kept Telegram `typing...` active for TUI-originated mirrored Codex
+      turns by starting the same managed typing guard on shared-transcript
+      live-turn kickoff and stopping it only after the final outbound
+      Telegram reply send path completes
+    - added multi-poll coverage proving the TUI-originated typing guard
+      stays alive across later collector transcript polls until the final
+      assistant turn arrives
+
 0.41 2026-05-22
     - made the managed `dashboard telegram-codex.start` launch path prepend
       `--dangerously-bypass-approvals-and-sandbox` before it hands off to

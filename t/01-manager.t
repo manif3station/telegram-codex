@@ -4452,6 +4452,7 @@ EOF
         "0\n",
     );
     my @post_calls;
+    my @typing_events;
     my $manager = new_manager(
         cwd  => $cwd,
         home => $home,
@@ -4469,6 +4470,14 @@ EOF
                 },
             };
         },
+        typing_guard_runner => sub {
+            my ( $summary, $self ) = @_;
+            push @typing_events, 'guard-start';
+            return sub {
+                push @typing_events, 'guard-stop';
+                return 1;
+            };
+        },
     );
     my %state;
     my $paths = $manager->listener_paths_for_session('skills');
@@ -4479,6 +4488,7 @@ EOF
     is( $post_calls[2][0], 'editMessageText', 'process_tui_live_outbound_transcript edits the verbose trace with commentary progress' );
     is( $post_calls[-1][0], 'sendMessage', 'process_tui_live_outbound_transcript sends the final assistant reply back to Telegram' );
     is( $post_calls[-1][1]{text}, 'Tests tightened and rerun.', 'process_tui_live_outbound_transcript returns the final assistant reply text to Telegram' );
+    is_deeply( \@typing_events, [ 'guard-start', 'guard-stop' ], 'process_tui_live_outbound_transcript keeps the typing guard active around the full TUI-originated Telegram delivery' );
 }
 
 {
@@ -4629,6 +4639,128 @@ EOF
     my $paths = $manager->listener_paths_for_session('skills');
     is( $manager->process_tui_live_outbound_transcript( 'skills', $paths, \%state ), 0, 'process_tui_live_outbound_transcript primes the cursor and returns without replaying old transcript rows when no cursor exists yet' );
     is( $manager->read_text_file( $paths->{transcript_cursor_file} ), (-s $session_file) . "\n", 'process_tui_live_outbound_transcript stores the transcript EOF cursor on first bootstrap' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $cwd = tempdir( CLEANUP => 1 );
+    my $session_id = '019e-live-outbound-multipoll';
+    my $runtime_dir = File::Spec->catdir( $home, '.telegram-codex', 'skills' );
+    my $session_dir = File::Spec->catdir( $home, '.codex', 'sessions', '2026', '05', '23' );
+    make_path($runtime_dir);
+    make_path($session_dir);
+    my $session_file = File::Spec->catfile( $session_dir, "rollout-2026-05-23T09-12-00-$session_id.jsonl" );
+    _write(
+        $session_file,
+        join(
+            "\n",
+            encode_json(
+                {
+                    timestamp => '2026-05-23T09:12:01Z',
+                    type      => 'response_item',
+                    payload   => {
+                        type    => 'message',
+                        role    => 'user',
+                        content => [ { type => 'input_text', text => 'Please continue' } ],
+                    },
+                }
+            ),
+            encode_json(
+                {
+                    timestamp => '2026-05-23T09:12:02Z',
+                    type      => 'response_item',
+                    payload   => {
+                        type    => 'message',
+                        role    => 'assistant',
+                        phase   => 'commentary',
+                        content => [ { type => 'output_text', text => 'Checking the current test state.' } ],
+                    },
+                }
+            ),
+            q{},
+        ),
+    );
+    _write( File::Spec->catfile( $runtime_dir, 'pairing.json' ), encode_json( { paired_chat_id => 398296603 } ) );
+    _write( File::Spec->catfile( $runtime_dir, 'codex.session' ), "$session_id\n" );
+    _write( File::Spec->catfile( $runtime_dir, 'transcript.cursor' ), "0\n" );
+    my @post_calls;
+    my @typing_events;
+    my $manager = new_manager(
+        cwd  => $cwd,
+        home => $home,
+        env  => { TELEGRAM_CODEX_SESSION_ID => 'skills' },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => {
+                    message_id => 900 + scalar @post_calls,
+                    chat       => { id => $params->{chat_id} },
+                },
+            };
+        },
+        typing_guard_runner => sub {
+            my ( $summary, $self ) = @_;
+            push @typing_events, 'guard-start';
+            return sub {
+                push @typing_events, 'guard-stop';
+                return 1;
+            };
+        },
+    );
+    my %state;
+    my $paths = $manager->listener_paths_for_session('skills');
+    is( $manager->process_tui_live_outbound_transcript( 'skills', $paths, \%state ), 2, 'process_tui_live_outbound_transcript starts and keeps a TUI-originated turn active across the first transcript poll' );
+    ok( $state{active}, 'process_tui_live_outbound_transcript leaves the active TUI mirror state open when no final answer has been seen yet' );
+    is_deeply( \@typing_events, ['guard-start'], 'process_tui_live_outbound_transcript starts the typing guard on the first poll and does not stop it before a final answer exists' );
+    _write(
+        $session_file,
+        join(
+            "\n",
+            encode_json(
+                {
+                    timestamp => '2026-05-23T09:12:01Z',
+                    type      => 'response_item',
+                    payload   => {
+                        type    => 'message',
+                        role    => 'user',
+                        content => [ { type => 'input_text', text => 'Please continue' } ],
+                    },
+                }
+            ),
+            encode_json(
+                {
+                    timestamp => '2026-05-23T09:12:02Z',
+                    type      => 'response_item',
+                    payload   => {
+                        type    => 'message',
+                        role    => 'assistant',
+                        phase   => 'commentary',
+                        content => [ { type => 'output_text', text => 'Checking the current test state.' } ],
+                    },
+                }
+            ),
+            encode_json(
+                {
+                    timestamp => '2026-05-23T09:12:03Z',
+                    type      => 'response_item',
+                    payload   => {
+                        type    => 'message',
+                        role    => 'assistant',
+                        phase   => 'final_answer',
+                        content => [ { type => 'output_text', text => 'Tightened the checks and reran them.' } ],
+                    },
+                }
+            ),
+            q{},
+        ),
+    );
+    is( $manager->process_tui_live_outbound_transcript( 'skills', $paths, \%state ), 1, 'process_tui_live_outbound_transcript consumes the later final assistant turn on the next transcript poll' );
+    ok( !$state{active}, 'process_tui_live_outbound_transcript clears the active TUI mirror state after the final assistant turn is delivered' );
+    is_deeply( \@typing_events, [ 'guard-start', 'guard-stop' ], 'process_tui_live_outbound_transcript keeps the typing guard alive across transcript polls until final delivery' );
+    is( $post_calls[-1][0], 'sendMessage', 'process_tui_live_outbound_transcript still sends the final assistant reply after the multi-poll live TUI path' );
+    is( $post_calls[-1][1]{text}, 'Tightened the checks and reran them.', 'process_tui_live_outbound_transcript returns the later final assistant reply text after the multi-poll live TUI path' );
 }
 
 {
