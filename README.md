@@ -87,77 +87,84 @@ Attachment handling:
 - the Codex prompt still receives `*_local_path=` lines for downloaded files, but non-image media remains a local-path input for tool-based inspection rather than a direct binary model attachment
 - direct `dashboard telegram-codex.download <FILE_ID>` and managed inbound-media downloads now use Telegram Bot API `getFile` query-string parameters correctly, so real photo and file downloads work in live runs
 
-## Commands
+## Getting Started
 
-Install or refresh the local Codex plugin bridge:
+Use this order instead of guessing which command to run first.
+
+1. Change into the project you want Telegram to drive.
+
+```bash
+cd ~/projects/my-project
+```
+
+2. Register the workspace with Dashboard. This seeds the workspace shell with the `WORKSPACE_REF` / `TICKET_REF` mapping that `telegram-codex.start add` uses later.
+
+```bash
+dashboard workspace my-project
+```
+
+3. Save the Telegram bot token into the project-local `.env`.
+
+```bash
+printf 'TELEGRAM_BOT_TOKEN=123456:telegram-bot-token\n' >> .env
+```
+
+4. Make sure `.env` is ignored before you keep working.
+
+```bash
+printf '.env\n' >> .gitignore
+```
+
+5. Install or refresh the local Codex Telegram bridge.
 
 ```bash
 dashboard telegram-codex.install 123456:telegram-bot-token
 ```
 
-Start the managed Codex + collector path:
+6. Start Codex normally inside that project.
+
+```bash
+codex
+```
+
+7. In Codex, send a small message such as `hi`, then run `/status` and note the active Codex session id.
+
+8. Exit Codex, but stay in the same `dashboard workspace` shell.
+
+9. Bind this workspace to that saved Codex session id from the same workspace shell.
+
+```bash
+dashboard telegram-codex.start add <codex-session-id>
+```
+
+10. Start or resume the managed Codex + Telegram bridge from that same workspace shell.
 
 ```bash
 dashboard telegram-codex.start
 ```
 
-Run the collector-owned polling loop directly for debugging:
+11. If you want the runtime audit trail too, use:
 
 ```bash
-dashboard telegram-codex.check-message <session-id>
+dashboard telegram-codex.start --audit
 ```
 
-Inspect the bot identity:
+After that, Telegram can drive the paired Codex session through the collector-owned bridge.
+
+## Direct Command Reference
+
+Use these when you already know the workflow above and need a specific helper.
 
 ```bash
 dashboard telegram-codex.get-me
-```
-
-Inspect recent Telegram updates:
-
-```bash
 dashboard telegram-codex.updates
-```
-
-Download an inbound Telegram file by `file_id`:
-
-```bash
+dashboard telegram-codex.check-message <session-id>
 dashboard telegram-codex.download <FILE_ID>
-```
-
-Send a text reply:
-
-```bash
 dashboard telegram-codex.reply <CHAT_ID> 'Hello from Codex'
-```
-
-Pair the current workspace session to the pending Telegram chat challenge:
-
-```bash
 dashboard telegram-codex.pair <HEX_CODE>
-```
-
-Send a photo:
-
-```bash
 dashboard telegram-codex.send-photo <CHAT_ID> ~/Pictures/demo.png
-```
-
-Send audio:
-
-```bash
 dashboard telegram-codex.send-audio <CHAT_ID> ~/Music/reply.mp3
-```
-
-Send a document:
-
-```bash
 dashboard telegram-codex.send-document <CHAT_ID> ~/Downloads/report.pdf
-```
-
-Reply to pending `/start` messages:
-
-```bash
 dashboard telegram-codex.auto-reply-start
 ```
 

@@ -6,6 +6,68 @@
 dashboard skills install telegram-codex
 ```
 
+## Recommended Workflow
+
+Use this path when you want Telegram to drive a real project session instead of starting from raw helper commands.
+
+1. Change into the project you want Telegram to control.
+
+```bash
+cd ~/projects/my-project
+```
+
+2. Open the Dashboard workspace. This seeds `WORKSPACE_REF` and `TICKET_REF`, which `telegram-codex.start add` uses when it stores the Codex session mapping.
+
+```bash
+dashboard workspace my-project
+```
+
+3. Save the bot token into the project-local `.env`.
+
+```bash
+printf 'TELEGRAM_BOT_TOKEN=123456:telegram-bot-token\n' >> .env
+```
+
+4. Ignore `.env` before you keep working.
+
+```bash
+printf '.env\n' >> .gitignore
+```
+
+5. Install or refresh the local Codex Telegram plugin bridge.
+
+```bash
+dashboard telegram-codex.install 123456:telegram-bot-token
+```
+
+6. Start Codex in that same workspace shell.
+
+```bash
+codex
+```
+
+7. Send a small prompt such as `hi`, then run `/status` and note the active Codex session id.
+
+8. Exit Codex, but stay in the same `dashboard workspace` shell.
+
+9. Save the Codex session mapping for this workspace.
+
+```bash
+dashboard telegram-codex.start add <codex-session-id>
+```
+
+10. Start or resume the managed Telegram bridge.
+
+```bash
+dashboard telegram-codex.start
+```
+
+11. If you want the per-session audit trail too, use:
+
+```bash
+dashboard telegram-codex.start --audit
+```
+
 ## Install The Local Codex Telegram Plugin
 
 ```bash

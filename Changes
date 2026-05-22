@@ -1,3 +1,12 @@
+0.36 2026-05-22
+    - replaced the README and usage command dump with a real step-by-step
+      onboarding workflow that matches the implementation order
+    - documented that `dashboard telegram-codex.start add
+      <codex-session-id>` must be run from the same `dashboard workspace`
+      shell where `WORKSPACE_REF` / `TICKET_REF` were seeded
+    - kept the raw helper commands as a secondary direct reference instead
+      of presenting them as the primary getting-started path
+
 0.35 2026-05-22
     - hardened live pairing enforcement with explicit pairing decision audit
       entries so each inbound Telegram message records whether it was

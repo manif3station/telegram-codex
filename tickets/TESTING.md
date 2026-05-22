@@ -15,6 +15,17 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-304`:
+  - `Files=6, Tests=532`
+  - `Result: PASS`
+- Docker covered gate for `DD-304`:
+  - `Files=6, Tests=532`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Onboarding-guide documentation updates:
+  - `README.md` now leads with a real step-by-step project workflow instead of a flat command dump
+  - the guide now explicitly keeps `dashboard telegram-codex.start add <codex-session-id>` in the same `dashboard workspace` shell where `WORKSPACE_REF` / `TICKET_REF` were seeded
+  - `docs/usage.md` mirrors the same implementation-aligned onboarding order
 - Docker functional gate for `DD-303`:
   - `Files=6, Tests=532`
   - `Result: PASS`
