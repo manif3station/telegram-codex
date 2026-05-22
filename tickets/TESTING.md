@@ -15,6 +15,17 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-299`:
+  - `Files=6, Tests=479`
+  - `Result: PASS`
+- Docker covered gate for `DD-299`:
+  - `Files=6, Tests=479`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Startup worker-recycle regressions:
+  - managed startup now explicitly recycles an already-running per-session `check-message <session-id>` worker before the DD collector restart
+  - direct recycle coverage proves the session pid path sends TERM and escalates when the worker still appears alive
+  - managed `execute_start` coverage proves collector restart still happens after the recycle step
 - Docker functional gate for `DD-298`:
   - `Files=6, Tests=471`
   - `Result: PASS`

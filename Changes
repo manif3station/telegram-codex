@@ -1,3 +1,9 @@
+0.31 2026-05-22
+    - made `dashboard telegram-codex.start` recycle any already-running
+      per-session `check-message <session-id>` worker before restarting the
+      DD collector, so new audit or progress-stream behavior takes effect
+      immediately instead of leaving a stale long-lived worker on old code
+
 0.30 2026-05-22
     - hardened the managed Telegram reply worker so verbose-progress reporter
       failures and progress-callback failures no longer abort the active

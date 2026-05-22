@@ -45,7 +45,8 @@ That command:
 dashboard restart collector telegram-codex-<session-id>
 ```
 
-7. launches the real Codex binary
+7. recycles any already-running `check-message <session-id>` worker for that same session so stale long-lived code does not stay active
+8. launches the real Codex binary
 
 `dashboard telegram-codex.start --version` is a safe metadata query for DD probe/discovery paths, must not create or restart collectors, and proxies the real underlying Codex CLI version output the DD launcher expects.
 Successful managed startup now hands off with `exec`, so the wrapper process should not remain as an extra long-lived `cli/start` parent once Codex is running. Ambient workspace `OLLAMA_MODEL` is intentionally ignored here; use `TELEGRAM_CODEX_OLLAMA_MODEL` only when Telegram-managed startup should explicitly inject the Ollama launch profile.
@@ -56,6 +57,7 @@ dashboard telegram-codex.start --audit
 ```
 
 That enables per-session audit rows under `~/.telegram-codex/<session-id>/audit.jsonl`.
+Because managed startup now recycles the old per-session worker first, `--audit` and newer progress behavior take effect immediately instead of being hidden behind a stale long-lived loop.
 
 When `~/.telegram-codex/<session-id>/codex.session` exists, the collector-owned `dashboard telegram-codex.check-message <session-id>` worker automatically resumes that Codex session to generate the Telegram reply text.
 If that file is missing, the managed reply path falls back to the saved-session mapping in `~/.developer-dashboard/config/codex.json`.

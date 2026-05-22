@@ -42,7 +42,8 @@ When `dashboard telegram-codex.start` runs with `TELEGRAM_BOT_TOKEN` and `TELEGR
    - `interval` fixed to `5`
    - `rotation.lines` fixed to `100`
    - `mode` fixed to `singleton`
-7. launches the real Codex binary
+7. recycles any already-running `check-message <session-id>` worker for that session so the new managed behavior replaces stale long-lived code immediately
+8. launches the real Codex binary
 
 `dashboard telegram-codex.start --version` is a pure metadata query that proxies the real underlying Codex CLI version output DD expects. DD can probe it safely without creating or restarting collectors.
 Successful managed startup now hands off with `exec`, so the wrapper process does not stay resident as an extra long-lived `cli/start` parent after Codex takes over. Ambient workspace `OLLAMA_MODEL` is no longer treated as an automatic provider override for Telegram-managed startup. If Telegram-owned startup really needs the Ollama launch profile, set `TELEGRAM_CODEX_OLLAMA_MODEL` explicitly.
@@ -53,6 +54,7 @@ dashboard telegram-codex.start --audit
 ```
 
 That enables a per-session audit trail under `~/.telegram-codex/<session-id>/` without changing the collector contract.
+It now also replaces any stale already-running worker for that same session, so the audit-enabled code path actually takes effect immediately instead of waiting for an old long-lived loop to die on its own.
 
 The collector-owned polling loop is now the always-on path. The old standalone listener command is no longer the primary runtime model.
 When `codex.session` exists for that collector session, `dashboard telegram-codex.check-message <session-id>` automatically routes replies back through that saved Codex session.

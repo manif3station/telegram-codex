@@ -61,6 +61,7 @@ sub new_manager {
         codex_version_runner => $args{codex_version_runner},
         command_runner       => $args{command_runner},
         pid_check_runner     => $args{pid_check_runner},
+        process_signal_runner => $args{process_signal_runner},
         typing_guard_runner  => $args{typing_guard_runner},
         progress_guard_runner => $args{progress_guard_runner},
         fork_runner          => $args{fork_runner},
@@ -836,6 +837,100 @@ sub new_manager {
         <$fh>;
     };
     is( $args, "workspace-start-live\nworkspace-start-live\n--search\n", 'execute_start exports the workspace session id into the launched Codex process' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $workspace = File::Spec->catdir( $home, 'skills' );
+    make_path($workspace);
+    my @signals;
+    my $manager = new_manager(
+        cwd  => $workspace,
+        home => $home,
+        env  => {
+            TELEGRAM_CODEX_RUNTIME_DIR => $home,
+        },
+        pid_check_runner => sub { return $_[0] == 424242 ? 1 : 0 },
+        process_signal_runner => sub {
+            my ( $signal, $pid ) = @_;
+            push @signals, [ $signal, $pid ];
+            return 1;
+        },
+        sleep_runner => sub { return 1; },
+    );
+    my $paths = $manager->listener_paths_for_session('skills');
+    make_path( $paths->{runtime_dir} );
+    _write( $paths->{pid_file}, "424242\n" );
+    ok( $manager->recycle_check_message_session('skills'), 'recycle_check_message_session returns true when it finds and recycles an active per-session worker pid' );
+    is_deeply( \@signals, [ [ 'TERM', 424242 ], [ 'KILL', 424242 ] ], 'recycle_check_message_session escalates from TERM to KILL when the worker still appears running' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $workspace = File::Spec->catdir( $home, 'skills' );
+    make_path($workspace);
+    my $manager = new_manager(
+        cwd  => $workspace,
+        home => $home,
+        env  => {
+            TELEGRAM_CODEX_RUNTIME_DIR => $home,
+        },
+        pid_check_runner => sub { return 0 },
+    );
+    my $paths = $manager->listener_paths_for_session('skills');
+    make_path( $paths->{runtime_dir} );
+    _write( $paths->{pid_file}, "424242\n" );
+    ok( !$manager->recycle_check_message_session('skills'), 'recycle_check_message_session returns false when it only clears a stale dead pid file' );
+    ok( !-f $paths->{pid_file}, 'recycle_check_message_session removes the stale pid file when the recorded worker is already gone' );
+}
+
+{
+    my $manager = new_manager;
+    ok( $manager->signal_process( 0, $$ ), 'signal_process falls back to the real kill path when no test runner override is supplied' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $workspace = File::Spec->catdir( $home, 'skills' );
+    my $bin_dir = File::Spec->catdir( $home, 'bin' );
+    make_path($workspace);
+    make_path($bin_dir);
+    my $real_codex = File::Spec->catfile( $bin_dir, 'codex-real' );
+    my $args_file = File::Spec->catfile( $home, 'collector-recycle.args' );
+    my $restart_log = File::Spec->catfile( $home, 'collector-recycle.restart' );
+    my $recycle_log = File::Spec->catfile( $home, 'collector-recycle.called' );
+    _write( $real_codex, "#!/bin/sh\nprintf '%s\\n' \"\$@\" > \"$args_file\"\nexit 0\n" );
+    chmod 0755, $real_codex or die "Unable to chmod fake real codex for recycle test: $!";
+    my $pid = fork();
+    die "Unable to fork execute_start recycle branch test: $!" if !defined $pid;
+    if ( !$pid ) {
+        my $manager = new_manager(
+            cwd  => $workspace,
+            home => $home,
+            env  => {
+                TELEGRAM_BOT_TOKEN              => 'token-xyz',
+                TELEGRAM_CODEX_ENABLE_AUTOSTART => '1',
+                CODEX_REAL_BIN                  => $real_codex,
+            },
+            command_runner => sub {
+                my ($command) = @_;
+                _write( $restart_log, join( "\n", @{$command} ) . "\n" );
+                return { ok => 1 };
+            },
+        );
+        no warnings 'redefine';
+        local *Telegram::Codex::Manager::recycle_check_message_session = sub {
+            my ( $self, $session_id ) = @_;
+            _write( $recycle_log, "$session_id\n" );
+            return 1;
+        };
+        $manager->execute_start('--search');
+        exit 0;
+    }
+    waitpid $pid, 0;
+    is( $? >> 8, 0, 'execute_start succeeds after recycling an existing per-session check-message worker' );
+    is( do { open my $fh, '<', $recycle_log or die $!; local $/; <$fh> }, "skills\n", 'execute_start invokes per-session worker recycling before restarting the collector' );
+    is( do { open my $fh, '<', $restart_log or die $!; local $/; <$fh> }, "dashboard\nrestart\ncollector\ntelegram-codex-skills\n", 'execute_start still restarts the governed DD collector after recycling the old worker' );
 }
 
 {

@@ -43,7 +43,8 @@ With `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CODEX_ENABLE_AUTOSTART=1`, `telegram-cod
 dashboard restart collector telegram-codex-<session-id>
 ```
 
-7. launches the real Codex binary
+7. recycles any already-running `dashboard telegram-codex.check-message <session-id>` worker for that same session
+8. launches the real Codex binary
 
 `dashboard telegram-codex.start --version` is intentionally side-effect free and proxies the real Codex CLI version output DD launcher checks expect, so DD command-family discovery can probe it without touching collectors.
 On a real startup, the launcher now uses `exec` for real Codex handoff, so a successful run does not leave an extra resident `cli/start` wrapper process behind.
@@ -55,6 +56,7 @@ dashboard telegram-codex.start --audit
 ```
 
 That enables per-session audit rows in `~/.telegram-codex/<session-id>/audit.jsonl`.
+Because startup now recycles an already-running worker for that session before the collector restart, the audited code path takes effect immediately instead of leaving an old long-lived worker alive.
 
 If `codex.session` is missing later, the managed reply path falls back to the same saved-session mapping in `~/.developer-dashboard/config/codex.json` instead of blindly using the collector session id.
 

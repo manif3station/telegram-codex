@@ -37,11 +37,12 @@ sub new {
         sleep_runner         => $args{sleep_runner},
         codex_resume_runner  => $args{codex_resume_runner},
         codex_version_runner => $args{codex_version_runner},
-        command_runner       => $args{command_runner},
-        pid_check_runner     => $args{pid_check_runner},
-        typing_guard_runner  => $args{typing_guard_runner},
-        progress_guard_runner => $args{progress_guard_runner},
-        fork_runner          => $args{fork_runner},
+                                command_runner       => $args{command_runner},
+                                pid_check_runner     => $args{pid_check_runner},
+                                process_signal_runner => $args{process_signal_runner},
+                                typing_guard_runner  => $args{typing_guard_runner},
+                                progress_guard_runner => $args{progress_guard_runner},
+                                fork_runner          => $args{fork_runner},
     }, $class;
     $self->{env} = $args{env} || $self->_merged_env;
     $self->{ua} = $args{ua} || $self->_build_ua;
@@ -172,6 +173,7 @@ sub execute_start {
 
     if ( $plan->{start_collector} ) {
         $self->ensure_startup_collector($plan);
+        $self->recycle_check_message_session( $plan->{collector_session_id} );
         $self->restart_startup_collector($plan);
     }
 
@@ -982,6 +984,43 @@ sub pid_is_running {
         return $self->{pid_check_runner}->($pid) ? 1 : 0;
     }
     return kill 0, $pid;
+}
+
+sub signal_process {
+    my ( $self, $signal, $pid ) = @_;
+    if ( $self->{process_signal_runner} ) {
+        return $self->{process_signal_runner}->( $signal, $pid ) ? 1 : 0;
+    }
+    return kill $signal, $pid;
+}
+
+sub recycle_check_message_session {
+    my ( $self, $session_id ) = @_;
+    return 0 if !defined $session_id || $session_id eq q{};
+    my $paths = $self->listener_paths_for_session($session_id);
+    my $pid_file = $paths->{pid_file};
+    return 0 if !-f $pid_file;
+    my $pid = $self->read_text_file($pid_file);
+    $pid =~ s/\s+\z//;
+    return 0 if $pid eq q{} || $pid !~ /\A\d+\z/;
+    if ( !$self->pid_is_running($pid) ) {
+        unlink $pid_file;
+        return 0;
+    }
+    $self->signal_process( 'TERM', $pid );
+    for ( 1 .. 10 ) {
+        last if !$self->pid_is_running($pid);
+        $self->listener_pause_seconds(1);
+    }
+    if ( $self->pid_is_running($pid) ) {
+        $self->signal_process( 'KILL', $pid );
+        for ( 1 .. 5 ) {
+            last if !$self->pid_is_running($pid);
+            $self->listener_pause_seconds(1);
+        }
+    }
+    unlink $pid_file if -f $pid_file && !$self->pid_is_running($pid);
+    return 1;
 }
 
 sub start_listener_if_needed {
@@ -2271,7 +2310,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-            agent   => 'telegram-codex/' . ( $self->env_value('VERSION') || '0.30' ),
+            agent   => 'telegram-codex/' . ( $self->env_value('VERSION') || '0.31' ),
         timeout => 60,
     );
     return $ua;
