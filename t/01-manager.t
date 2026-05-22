@@ -69,6 +69,9 @@ sub new_manager {
         typing_guard_runner  => $args{typing_guard_runner},
         progress_guard_runner => $args{progress_guard_runner},
         fork_runner          => $args{fork_runner},
+        process_list_runner  => $args{process_list_runner},
+        tmux_panes_runner    => $args{tmux_panes_runner},
+        tmux_send_runner     => $args{tmux_send_runner},
     );
 }
 
@@ -2172,6 +2175,26 @@ sub new_manager {
 
 {
     my $runtime = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            die "Telegram POST failed for sendChatAction: 429 Too Many Requests\n" if $method eq 'sendChatAction';
+            return { ok => JSON::XS::true, result => { ok => JSON::XS::true } };
+        },
+    );
+    my $error = $manager->send_telegram_typing_action_for_chat(88);
+    is( $error->{chat_id}, 88, 'send_telegram_typing_action_for_chat returns the chat id when Telegram typing fails directly' );
+    like( $error->{error}, qr/sendChatAction: 429 Too Many Requests/, 'send_telegram_typing_action_for_chat returns the Telegram typing failure detail instead of dying' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
     my @post_calls;
     my $manager = new_manager(
         cwd  => $runtime,
@@ -3026,6 +3049,7 @@ sub new_manager {
         home => $runtime,
         env  => {
             TELEGRAM_CODEX_TARGET_SESSION_ID => $session_id,
+            TELEGRAM_CODEX_SESSION_ID        => 'skills',
         },
     );
     my @messages = $manager->codex_session_recent_messages($session_id);
@@ -4033,6 +4057,563 @@ EOF
     is( scalar @{ $updated->{plugins} }, 2, 'update_marketplace updates existing entry without duplication' );
     is( $updated->{plugins}[0]{source}{path}, './plugins/telegram-codex', 'update_marketplace refreshes existing telegram-codex entry' );
     is( $updated->{plugins}[1]{name}, 'another-plugin', 'update_marketplace keeps unrelated plugins' );
+}
+
+{
+    my $manager = new_manager(
+        process_list_runner => sub {
+            return [
+                {
+                    pid => 1920363,
+                    tty => 'pts/34',
+                    cmd => '/opt/codex/bin/codex resume 019e-live-shared-session',
+                },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                {
+                    pane_id => '%118',
+                    tty     => '/dev/pts/34',
+                },
+            ];
+        },
+    );
+    is( $manager->discover_codex_session_tty('019e-live-shared-session'), 'pts/34', 'discover_codex_session_tty finds the tty for the live shared Codex session' );
+    is( $manager->resolve_codex_live_tmux_pane('019e-live-shared-session'), '%118', 'resolve_codex_live_tmux_pane maps the live shared Codex session to its tmux pane' );
+}
+
+{
+    my @sent;
+    my $manager = new_manager(
+        tmux_send_runner => sub {
+            my ( $pane_id, $text ) = @_;
+            push @sent, [ $pane_id, $text ];
+            return 1;
+        },
+    );
+    ok( $manager->tmux_send_text_to_pane( '%118', 'Remember this code abc:foo' ), 'tmux_send_text_to_pane succeeds through the injected tmux sender' );
+    is_deeply( \@sent, [ [ '%118', 'Remember this code abc:foo' ] ], 'tmux_send_text_to_pane forwards the pane id and literal text to tmux' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $cwd = tempdir( CLEANUP => 1 );
+    my $session_id = '019e-live-pane-session';
+    my $session_dir = File::Spec->catdir( $home, '.codex', 'sessions', '2026', '05', '22' );
+    make_path($session_dir);
+    my $session_file = File::Spec->catfile( $session_dir, "rollout-2026-05-22T18-30-00-$session_id.jsonl" );
+    _write( $session_file, q{} );
+    my @progress;
+    my $manager = new_manager(
+        cwd  => $cwd,
+        home => $home,
+        env  => {
+            TELEGRAM_CODEX_TARGET_SESSION_ID => $session_id,
+        },
+        process_list_runner => sub {
+            return [
+                {
+                    pid => 1920363,
+                    tty => 'pts/34',
+                    cmd => "/opt/codex/bin/codex resume $session_id",
+                },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                {
+                    pane_id => '%118',
+                    tty     => '/dev/pts/34',
+                },
+            ];
+        },
+        tmux_send_runner => sub {
+            my ( $pane_id, $text ) = @_;
+            open my $fh, '>>', $session_file or die "Unable to append $session_file: $!";
+            print {$fh} encode_json(
+                {
+                    timestamp => '2026-05-22T18:30:01Z',
+                    type      => 'response_item',
+                    payload   => {
+                        type    => 'message',
+                        role    => 'user',
+                        content => [
+                            {
+                                type => 'input_text',
+                                text => $text,
+                            },
+                        ],
+                    },
+                }
+            ) . "\n";
+            print {$fh} encode_json(
+                {
+                    timestamp => '2026-05-22T18:30:02Z',
+                    type      => 'response_item',
+                    payload   => {
+                        type    => 'message',
+                        role    => 'assistant',
+                        phase   => 'commentary',
+                        content => [
+                            {
+                                type => 'output_text',
+                                text => 'Checking the live shared Codex session now.',
+                            },
+                        ],
+                    },
+                }
+            ) . "\n";
+            print {$fh} encode_json(
+                {
+                    timestamp => '2026-05-22T18:30:03Z',
+                    type      => 'response_item',
+                    payload   => {
+                        type    => 'message',
+                        role    => 'assistant',
+                        phase   => 'final_answer',
+                        content => [
+                            {
+                                type => 'output_text',
+                                text => 'Final live shared Codex reply.',
+                            },
+                        ],
+                    },
+                }
+            ) . "\n";
+            close $fh or die "Unable to close $session_file: $!";
+            return 1;
+        },
+        codex_resume_runner => sub { die "live pane path should not fall back to codex exec resume\n" },
+        sleep_runner        => sub { return 0 },
+    );
+    my $reply = $manager->codex_session_reply_for_update(
+        {
+            text       => 'Remember this code abc:foo',
+            chat       => { id => 398296603 },
+            message_id => 91,
+        },
+        on_progress => sub {
+            my ($line) = @_;
+            push @progress, $line;
+            return 1;
+        },
+    );
+    is( $reply, 'Final live shared Codex reply.', 'codex_session_reply_for_update returns the final assistant reply from the shared live transcript when a live tmux pane exists' );
+    is_deeply( \@progress, [ 'Checking the live shared Codex session now.' ], 'codex_session_reply_for_update streams commentary rows from the shared live transcript as progress' );
+    my $cursor_file = $manager->listener_paths->{transcript_cursor_file};
+    ok( -f $cursor_file, 'codex_session_reply_for_update records the shared transcript cursor after consuming a live pane turn' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $cwd = tempdir( CLEANUP => 1 );
+    my $session_id = '019e-live-outbound-session';
+    my $runtime_dir = File::Spec->catdir( $home, '.telegram-codex', 'skills' );
+    my $session_dir = File::Spec->catdir( $home, '.codex', 'sessions', '2026', '05', '22' );
+    make_path($runtime_dir);
+    make_path($session_dir);
+    my $session_file = File::Spec->catfile( $session_dir, "rollout-2026-05-22T18-31-00-$session_id.jsonl" );
+    _write(
+        $session_file,
+        join(
+            "\n",
+            encode_json(
+                {
+                    timestamp => '2026-05-22T18:31:01Z',
+                    type      => 'response_item',
+                    payload   => {
+                        type    => 'message',
+                        role    => 'user',
+                        content => [
+                            {
+                                type => 'input_text',
+                                text => 'Please tighten these tests.',
+                            },
+                        ],
+                    },
+                }
+            ),
+            encode_json(
+                {
+                    timestamp => '2026-05-22T18:31:02Z',
+                    type      => 'response_item',
+                    payload   => {
+                        type    => 'message',
+                        role    => 'assistant',
+                        phase   => 'commentary',
+                        content => [
+                            {
+                                type => 'output_text',
+                                text => 'Reviewing the current test suite now.',
+                            },
+                        ],
+                    },
+                }
+            ),
+            encode_json(
+                {
+                    timestamp => '2026-05-22T18:31:03Z',
+                    type      => 'response_item',
+                    payload   => {
+                        type    => 'message',
+                        role    => 'assistant',
+                        phase   => 'final_answer',
+                        content => [
+                            {
+                                type => 'output_text',
+                                text => 'Tests tightened and rerun.',
+                            },
+                        ],
+                    },
+                }
+            ),
+            q{},
+        ),
+    );
+    _write(
+        File::Spec->catfile( $runtime_dir, 'pairing.json' ),
+        encode_json( { paired_chat_id => 398296603 } ),
+    );
+    _write(
+        File::Spec->catfile( $runtime_dir, 'codex.session' ),
+        "$session_id\n",
+    );
+    _write(
+        File::Spec->catfile( $runtime_dir, 'transcript.cursor' ),
+        "0\n",
+    );
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $cwd,
+        home => $home,
+        env  => {
+            TELEGRAM_CODEX_SESSION_ID => 'skills',
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => {
+                    message_id => 700 + scalar @post_calls,
+                    chat       => { id => $params->{chat_id} },
+                },
+            };
+        },
+    );
+    my %state;
+    my $paths = $manager->listener_paths_for_session('skills');
+    is( $manager->process_tui_live_outbound_transcript( 'skills', $paths, \%state ), 3, 'process_tui_live_outbound_transcript consumes new transcript rows for a paired chat' );
+    is( $post_calls[0][0], 'sendChatAction', 'process_tui_live_outbound_transcript sends typing to Telegram for a TUI-originated turn' );
+    is( $post_calls[1][0], 'sendMessage', 'process_tui_live_outbound_transcript sends the initial verbose trace to Telegram for a TUI-originated turn' );
+    like( $post_calls[1][1]{text}, qr/Codex verbose/, 'process_tui_live_outbound_transcript starts the Telegram verbose trace for a TUI-originated turn' );
+    is( $post_calls[2][0], 'editMessageText', 'process_tui_live_outbound_transcript edits the verbose trace with commentary progress' );
+    is( $post_calls[-1][0], 'sendMessage', 'process_tui_live_outbound_transcript sends the final assistant reply back to Telegram' );
+    is( $post_calls[-1][1]{text}, 'Tests tightened and rerun.', 'process_tui_live_outbound_transcript returns the final assistant reply text to Telegram' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $bin_dir = File::Spec->catdir( $home, 'bin' );
+    make_path($bin_dir);
+    my $ps = File::Spec->catfile( $bin_dir, 'ps' );
+    _write(
+        $ps,
+        "#!/bin/sh\nprintf '  11 ? helper --noop\\n  22 pts/77 codex resume 019e-real-tty\\n'\n"
+    );
+    chmod 0755, $ps or die "Unable to chmod fake ps helper: $!";
+    local $ENV{PATH} = $bin_dir;
+    my $manager = new_manager( cwd => $home, home => $home );
+    is( $manager->discover_codex_session_tty('019e-real-tty'), 'pts/77', 'discover_codex_session_tty uses the real ps branch and skips unrelated or ttyless rows' );
+    my @rows = $manager->codex_process_rows;
+    is( $rows[1]{cmd}, 'codex resume 019e-real-tty', 'codex_process_rows parses ps output through the default branch' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $bin_dir = File::Spec->catdir( $home, 'bin' );
+    make_path($bin_dir);
+    my $tmux = File::Spec->catfile( $bin_dir, 'tmux' );
+    my $log = File::Spec->catfile( $home, 'tmux-send.log' );
+    _write(
+        $tmux,
+        <<"EOF"
+#!/bin/sh
+if [ "\$1" = "list-panes" ]; then
+  printf '%%118\t/dev/pts/77\tnode\n'
+  exit 0
+fi
+if [ "\$1" = "send-keys" ]; then
+  printf '%s|' "\$@" >> "$log"
+  printf '\n' >> "$log"
+  exit 0
+fi
+exit 1
+EOF
+    );
+    chmod 0755, $tmux or die "Unable to chmod fake tmux helper: $!";
+    local $ENV{PATH} = $bin_dir;
+    my $manager = new_manager( cwd => $home, home => $home );
+    my @panes = $manager->tmux_pane_rows;
+    is( $panes[0]{pane_id}, '%118', 'tmux_pane_rows uses the real tmux list-panes branch' );
+    is( $manager->discover_tmux_pane_for_tty('pts/77'), '%118', 'discover_tmux_pane_for_tty matches a tty without a /dev prefix' );
+    ok( !defined $manager->discover_tmux_pane_for_tty('pts/99'), 'discover_tmux_pane_for_tty returns undef when no tmux pane matches the tty' );
+    ok( $manager->tmux_send_text_to_pane( '%118', 'Remember this code abc:foo' ), 'tmux_send_text_to_pane uses the real tmux send-keys branch' );
+    my $send_log = do {
+        open my $fh, '<', $log or die $!;
+        local $/;
+        <$fh>;
+    };
+    like( $send_log, qr/send-keys\|-t\|%118\|-l\|--\|Remember this code abc:foo\|/, 'tmux_send_text_to_pane sends literal text to the target pane' );
+    like( $send_log, qr/send-keys\|-t\|%118\|Enter\|/, 'tmux_send_text_to_pane sends Enter to submit the injected text' );
+}
+
+{
+    my $manager = new_manager;
+    my $prompt = $manager->codex_live_pane_prompt(
+        {
+            text    => 'Check this image',
+            caption => 'latest upload',
+            photo   => { local_path => '/tmp/photo.png' },
+            audio   => { title => 'tone' },
+        }
+    );
+    like( $prompt, qr/\ACheck this image\n\[caption\] latest upload\n/s, 'codex_live_pane_prompt starts with the text and caption when both are present' );
+    like( $prompt, qr/Any \*_local_path values below are already downloaded locally for this active Codex session\./, 'codex_live_pane_prompt includes the downloaded-local preface when media exists' );
+    like( $prompt, qr/\[photo\] \/tmp\/photo\.png/, 'codex_live_pane_prompt includes media summary lines for downloaded files' );
+    like( $prompt, qr/\[audio\] tone/, 'codex_live_pane_prompt includes non-file media summary lines too' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $home = tempdir( CLEANUP => 1 );
+    my $session_id = '019e-live-bootstrap-session';
+    my $runtime_dir = File::Spec->catdir( $home, '.telegram-codex', 'skills' );
+    my $session_dir = File::Spec->catdir( $home, '.codex', 'sessions', '2026', '05', '22' );
+    make_path($runtime_dir);
+    make_path($session_dir);
+    my $session_file = File::Spec->catfile( $session_dir, "rollout-2026-05-22T18-31-00-$session_id.jsonl" );
+    _write(
+        $session_file,
+        encode_json(
+            {
+                timestamp => '2026-05-22T18:31:01Z',
+                type      => 'response_item',
+                payload   => {
+                    type    => 'message',
+                    role    => 'user',
+                    content => [ { type => 'input_text', text => 'Bootstrap only' } ],
+                },
+            }
+        ) . "\n",
+    );
+    _write( File::Spec->catfile( $runtime_dir, 'pairing.json' ), encode_json( { paired_chat_id => 398296603 } ) );
+    _write( File::Spec->catfile( $runtime_dir, 'codex.session' ), "$session_id\n" );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $home,
+        env  => { TELEGRAM_CODEX_SESSION_ID => 'skills' },
+    );
+    my %state;
+    my $paths = $manager->listener_paths_for_session('skills');
+    is( $manager->process_tui_live_outbound_transcript( 'skills', $paths, \%state ), 0, 'process_tui_live_outbound_transcript primes the cursor and returns without replaying old transcript rows when no cursor exists yet' );
+    is( $manager->read_text_file( $paths->{transcript_cursor_file} ), (-s $session_file) . "\n", 'process_tui_live_outbound_transcript stores the transcript EOF cursor on first bootstrap' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $cwd = tempdir( CLEANUP => 1 );
+    my $session_id = '019e-live-outbound-on-error';
+    my $runtime_dir = File::Spec->catdir( $home, '.telegram-codex', 'skills' );
+    my $session_dir = File::Spec->catdir( $home, '.codex', 'sessions', '2026', '05', '22' );
+    make_path($runtime_dir);
+    make_path($session_dir);
+    my $session_file = File::Spec->catfile( $session_dir, "rollout-2026-05-22T18-31-00-$session_id.jsonl" );
+    _write(
+        $session_file,
+        join(
+            "\n",
+            encode_json(
+                {
+                    timestamp => '2026-05-22T18:31:01Z',
+                    type      => 'response_item',
+                    payload   => {
+                        type    => 'message',
+                        role    => 'user',
+                        content => [ { type => 'input_text', text => 'Please continue' } ],
+                    },
+                }
+            ),
+            encode_json(
+                {
+                    timestamp => '2026-05-22T18:31:02Z',
+                    type      => 'response_item',
+                    payload   => {
+                        type    => 'message',
+                        role    => 'assistant',
+                        phase   => 'final_answer',
+                        content => [ { type => 'output_text', text => 'Finished.' } ],
+                    },
+                }
+            ),
+            q{},
+        ),
+    );
+    _write( File::Spec->catfile( $runtime_dir, 'pairing.json' ), encode_json( { paired_chat_id => 398296603 } ) );
+    _write( File::Spec->catfile( $runtime_dir, 'codex.session' ), "$session_id\n" );
+    _write( File::Spec->catfile( $runtime_dir, 'transcript.cursor' ), "0\n" );
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $cwd,
+        home => $home,
+        env  => { TELEGRAM_CODEX_SESSION_ID => 'skills' },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            die "Telegram POST failed for sendMessage: 500 Verbose kickoff rejected\n"
+              if $method eq 'sendMessage' && ( $params->{text} || q{} ) =~ /Codex verbose/;
+            return {
+                ok     => JSON::XS::true,
+                result => {
+                    message_id => 800 + scalar @post_calls,
+                    chat       => { id => $params->{chat_id} },
+                },
+            };
+        },
+    );
+    my %state;
+    my @progress_errors;
+    my $paths = $manager->listener_paths_for_session('skills');
+    is( $manager->process_tui_live_outbound_transcript( 'skills', $paths, \%state, progress_errors => \@progress_errors ), 2, 'process_tui_live_outbound_transcript still consumes transcript rows when the initial verbose kickoff fails' );
+    is( $post_calls[0][0], 'sendChatAction', 'process_tui_live_outbound_transcript still attempts typing before the reporter error path' );
+    is( $post_calls[1][0], 'sendMessage', 'process_tui_live_outbound_transcript attempts the verbose kickoff message before the error callback path' );
+    like( $progress_errors[0]{error}, qr/Verbose kickoff rejected/, 'process_tui_live_outbound_transcript captures the verbose kickoff failure through the on_error callback' );
+    is( $post_calls[-1][1]{text}, 'Finished.', 'process_tui_live_outbound_transcript still delivers the final assistant reply after the verbose kickoff failure' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $cwd = tempdir( CLEANUP => 1 );
+    my $session_id = '019e-live-pane-progress-error';
+    my $runtime_dir = File::Spec->catdir( $home, '.telegram-codex', 'skills' );
+    my $session_dir = File::Spec->catdir( $home, '.codex', 'sessions', '2026', '05', '22' );
+    make_path($runtime_dir);
+    make_path($session_dir);
+    my $session_file = File::Spec->catfile( $session_dir, "rollout-2026-05-22T18-31-00-$session_id.jsonl" );
+    my $prompt = "Check progress callback failure";
+    _write( $session_file, q{} );
+    my $manager = new_manager(
+        cwd  => $cwd,
+        home => $home,
+        env  => {
+            TELEGRAM_CODEX_SESSION_ID => 'skills',
+            TELEGRAM_CODEX_AUDIT      => '1',
+        },
+        tmux_send_runner => sub {
+            _write(
+                $session_file,
+                join(
+                    "\n",
+                    encode_json(
+                        {
+                            timestamp => '2026-05-22T18:31:01Z',
+                            type      => 'response_item',
+                            payload   => {
+                                type    => 'message',
+                                role    => 'user',
+                                content => [ { type => 'input_text', text => $prompt } ],
+                            },
+                        }
+                    ),
+                    encode_json(
+                        {
+                            timestamp => '2026-05-22T18:31:02Z',
+                            type      => 'response_item',
+                            payload   => {
+                                type    => 'message',
+                                role    => 'assistant',
+                                phase   => 'commentary',
+                                content => [ { type => 'output_text', text => 'This commentary will fail' } ],
+                            },
+                        }
+                    ),
+                    encode_json(
+                        {
+                            timestamp => '2026-05-22T18:31:03Z',
+                            type      => 'response_item',
+                            payload   => {
+                                type    => 'message',
+                                role    => 'assistant',
+                                phase   => 'final_answer',
+                                content => [ { type => 'output_text', text => 'Still finished.' } ],
+                            },
+                        }
+                    ),
+                    q{},
+                ),
+            );
+            return 1;
+        },
+    );
+    my $reply = $manager->run_codex_session_live_pane(
+        $session_id,
+        '%118',
+        { text => $prompt },
+        on_progress => sub { die "progress callback blew up\n" },
+    );
+    is( $reply, 'Still finished.', 'run_codex_session_live_pane still returns the final answer after a progress callback failure' );
+    my $audit = $manager->read_text_file( $manager->listener_paths->{audit_file} );
+    like( $audit, qr/codex\.live_pane\.progress_callback_failed/, 'run_codex_session_live_pane audits the progress callback failure' );
+    like( $audit, qr/progress callback blew up/, 'run_codex_session_live_pane preserves the progress callback failure detail' );
+}
+
+{
+    my $home = tempdir( CLEANUP => 1 );
+    my $cwd = tempdir( CLEANUP => 1 );
+    my $session_id = '019e-live-pane-timeout';
+    my $runtime_dir = File::Spec->catdir( $home, '.telegram-codex', 'skills' );
+    my $session_dir = File::Spec->catdir( $home, '.codex', 'sessions', '2026', '05', '22' );
+    make_path($runtime_dir);
+    make_path($session_dir);
+    my $session_file = File::Spec->catfile( $session_dir, "rollout-2026-05-22T18-31-00-$session_id.jsonl" );
+    my $prompt = "Wait forever";
+    _write( $session_file, q{} );
+    my $pauses = 0;
+    my $manager = new_manager(
+        cwd  => $cwd,
+        home => $home,
+        env  => { TELEGRAM_CODEX_SESSION_ID => 'skills' },
+        tmux_send_runner => sub {
+            _write(
+                $session_file,
+                encode_json(
+                    {
+                        timestamp => '2026-05-22T18:31:01Z',
+                        type      => 'response_item',
+                        payload   => {
+                            type    => 'message',
+                            role    => 'user',
+                            content => [ { type => 'input_text', text => $prompt } ],
+                        },
+                    }
+                ) . "\n",
+            );
+            return 1;
+        },
+        sleep_runner => sub { $pauses++; return 1; },
+    );
+    my $error = eval {
+        $manager->run_codex_session_live_pane(
+            $session_id,
+            '%118',
+            { text => $prompt },
+        );
+        return q{};
+    };
+    $error = $@ if !$error;
+    like( $error, qr/Timed out waiting for the live Codex pane to finish the Telegram turn/, 'run_codex_session_live_pane fails explicitly when no final answer arrives from the live transcript' );
+    is( $pauses, 600, 'run_codex_session_live_pane executes the live-pane wait loop until timeout when no final answer arrives' );
 }
 
 sub _write {

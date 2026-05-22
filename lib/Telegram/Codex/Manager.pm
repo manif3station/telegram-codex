@@ -37,12 +37,15 @@ sub new {
         sleep_runner         => $args{sleep_runner},
         codex_resume_runner  => $args{codex_resume_runner},
         codex_version_runner => $args{codex_version_runner},
-                                command_runner       => $args{command_runner},
-                                pid_check_runner     => $args{pid_check_runner},
-                                process_signal_runner => $args{process_signal_runner},
-                                typing_guard_runner  => $args{typing_guard_runner},
-                                progress_guard_runner => $args{progress_guard_runner},
-                                fork_runner          => $args{fork_runner},
+        command_runner       => $args{command_runner},
+        pid_check_runner     => $args{pid_check_runner},
+        process_signal_runner => $args{process_signal_runner},
+        typing_guard_runner  => $args{typing_guard_runner},
+        progress_guard_runner => $args{progress_guard_runner},
+        fork_runner          => $args{fork_runner},
+        process_list_runner  => $args{process_list_runner},
+        tmux_panes_runner    => $args{tmux_panes_runner},
+        tmux_send_runner     => $args{tmux_send_runner},
     }, $class;
     $self->{env} = $args{env} || $self->_merged_env;
     $self->{ua} = $args{ua} || $self->_build_ua;
@@ -428,6 +431,7 @@ sub execute_check_messages {
     my @typing_errors;
     my @get_errors;
     my @progress_errors;
+    my $live_outbound_state = {};
 
     $self->append_listener_audit_event(
         $paths,
@@ -652,6 +656,13 @@ sub execute_check_messages {
             $self->write_listener_offset( $paths->{offset_file}, $offset );
         }
         $cycles++;
+        $self->process_tui_live_outbound_transcript(
+            $session_id,
+            $paths,
+            $live_outbound_state,
+            progress_errors => \@progress_errors,
+            reply_errors    => \@reply_errors,
+        );
         last if defined $max_cycles && $cycles >= $max_cycles;
     }
 
@@ -1563,6 +1574,7 @@ sub listener_paths_for_session {
         audit_file   => File::Spec->catfile( $runtime_dir, 'audit.jsonl' ),
         audit_flag_file => File::Spec->catfile( $runtime_dir, 'audit.enabled' ),
         target_session_file => File::Spec->catfile( $runtime_dir, 'codex.session' ),
+        transcript_cursor_file => File::Spec->catfile( $runtime_dir, 'transcript.cursor' ),
         pairing_state_file => File::Spec->catfile( $runtime_dir, 'pairing.json' ),
     };
 }
@@ -1800,6 +1812,15 @@ sub listener_reply_message_for_update {
 sub codex_session_reply_for_update {
     my ( $self, $summary, %args ) = @_;
     my $session_id = $self->resolve_codex_reply_session_id;
+    my $live_pane = $self->resolve_codex_live_tmux_pane($session_id);
+    if ( defined $live_pane && $live_pane ne q{} ) {
+        return $self->run_codex_session_live_pane(
+            $session_id,
+            $live_pane,
+            $summary,
+            %args,
+        );
+    }
     my $prompt = $self->codex_session_reply_prompt($summary);
     my $needs_completion = $self->telegram_message_requires_completion($summary);
     my $reply = $self->run_codex_session_resume( $session_id, $prompt, $summary, %args );
@@ -1813,6 +1834,80 @@ sub codex_session_reply_for_update {
     }
     $self->sync_telegram_exchange_to_codex_session( $session_id, $summary, $reply );
     return $reply;
+}
+
+sub run_codex_session_live_pane {
+    my ( $self, $session_id, $pane_id, $summary, %args ) = @_;
+    my $on_progress = $args{on_progress};
+    my $paths = $self->listener_paths;
+    my $transcript_path = $self->codex_session_transcript_path($session_id)
+      or die "Unable to locate the live Codex transcript for session $session_id\n";
+    my $cursor = $self->codex_session_transcript_size($transcript_path);
+    my $prompt = $self->codex_live_pane_prompt($summary);
+    $self->tmux_send_text_to_pane( $pane_id, $prompt );
+    $self->append_listener_audit_event(
+        $paths,
+        'codex.live_pane.injected',
+        {
+            session_id      => $session_id,
+            pane_id         => $pane_id,
+            transcript_path => $transcript_path,
+        },
+    );
+
+    my $saw_user = 0;
+    my %seen_progress;
+    for ( 1 .. 600 ) {
+        my ( $next_cursor, @events ) = $self->codex_session_transcript_events_since( $transcript_path, $cursor );
+        $cursor = $next_cursor;
+        for my $event (@events) {
+            if ( !$saw_user ) {
+                if ( $event->{role} eq 'user' && $event->{text} eq $prompt ) {
+                    $saw_user = 1;
+                }
+                next;
+            }
+            next if $event->{role} ne 'assistant';
+            if ( ( $event->{phase} || q{} ) eq 'commentary' ) {
+                next if !$on_progress;
+                for my $line ( grep { defined $_ && $_ ne q{} } split /\n+/, $event->{text} ) {
+                    next if $seen_progress{$line}++;
+                    my $ok = eval { $on_progress->($line) };
+                    if ( !$ok || $@ ) {
+                        my $error = $@;
+                        chomp $error;
+                        $error ||= 'Codex live-pane progress callback failed';
+                        $self->append_listener_audit_event(
+                            $paths,
+                            'codex.live_pane.progress_callback_failed',
+                            {
+                                session_id => $session_id,
+                                pane_id    => $pane_id,
+                                error      => $error,
+                                line       => $line,
+                            },
+                        );
+                    }
+                }
+                next;
+            }
+            if ( ( $event->{phase} || q{} ) eq 'final_answer' ) {
+                $self->write_listener_offset( $paths->{transcript_cursor_file}, $cursor );
+                $self->append_listener_audit_event(
+                    $paths,
+                    'codex.live_pane.completed',
+                    {
+                        session_id  => $session_id,
+                        pane_id     => $pane_id,
+                        reply_bytes => length( $event->{text} || q{} ),
+                    },
+                );
+                return $event->{text};
+            }
+        }
+        $self->listener_pause_seconds(1);
+    }
+    die "Timed out waiting for the live Codex pane to finish the Telegram turn\n";
 }
 
 sub run_codex_session_resume {
@@ -1934,6 +2029,212 @@ sub resolve_codex_reply_session_id {
       || $self->read_codex_target_session_id( $self->listener_paths->{target_session_file} )
       || $self->mapped_codex_session_from_config
       || $self->listener_session_id;
+}
+
+sub resolve_codex_live_tmux_pane {
+    my ( $self, $session_id ) = @_;
+    return undef if !defined $session_id || $session_id eq q{};
+    my $tty = $self->discover_codex_session_tty($session_id);
+    return undef if !defined $tty || $tty eq q{};
+    return $self->discover_tmux_pane_for_tty($tty);
+}
+
+sub discover_codex_session_tty {
+    my ( $self, $session_id ) = @_;
+    return undef if !defined $session_id || $session_id eq q{};
+    my @rows = $self->codex_process_rows;
+    for my $row (@rows) {
+        next if !$row->{cmd} || $row->{cmd} !~ /\bcodex\b/;
+        next if $row->{cmd} !~ /\bresume\s+\Q$session_id\E(?:\s|\z)/;
+        next if !$row->{tty} || $row->{tty} eq '?';
+        return $row->{tty};
+    }
+    return undef;
+}
+
+sub codex_process_rows {
+    my ($self) = @_;
+    if ( $self->{process_list_runner} ) {
+        return @{ $self->{process_list_runner}->() || [] };
+    }
+    open my $fh, '-|', 'ps', '-eo', 'pid=,tty=,args='
+      or die "Unable to run ps for codex process discovery: $!";
+    my @rows;
+    while ( my $line = <$fh> ) {
+        chomp $line;
+        next if !defined $line || $line eq q{};
+        my ( $pid, $tty, $cmd ) = $line =~ /\A\s*(\d+)\s+(\S+)\s+(.*)\z/;
+        next if !defined $pid;
+        push @rows, {
+            pid => 0 + $pid,
+            tty => $tty,
+            cmd => $cmd,
+        };
+    }
+    close $fh;
+    return @rows;
+}
+
+sub discover_tmux_pane_for_tty {
+    my ( $self, $tty ) = @_;
+    return undef if !defined $tty || $tty eq q{};
+    my @panes = $self->tmux_pane_rows;
+    my $wanted_tty = $tty =~ m{\A/dev/} ? $tty : '/dev/' . $tty;
+    for my $pane (@panes) {
+        next if !$pane->{tty};
+        return $pane->{pane_id} if $pane->{tty} eq $wanted_tty;
+    }
+    return undef;
+}
+
+sub tmux_pane_rows {
+    my ($self) = @_;
+    if ( $self->{tmux_panes_runner} ) {
+        return @{ $self->{tmux_panes_runner}->() || [] };
+    }
+    open my $fh, '-|', 'tmux', 'list-panes', '-a', '-F', '#{pane_id}' . "\t" . '#{pane_tty}' . "\t" . '#{pane_current_command}'
+      or return ();
+    my @rows;
+    while ( my $line = <$fh> ) {
+        chomp $line;
+        my ( $pane_id, $tty, $current_command ) = split /\t/, $line, 3;
+        next if !defined $pane_id || !defined $tty;
+        push @rows, {
+            pane_id         => $pane_id,
+            tty             => $tty,
+            current_command => $current_command,
+        };
+    }
+    close $fh;
+    return @rows;
+}
+
+sub tmux_send_text_to_pane {
+    my ( $self, $pane_id, $text ) = @_;
+    die "Missing tmux pane id\n" if !defined $pane_id || $pane_id eq q{};
+    $text = q{} if !defined $text;
+    if ( $self->{tmux_send_runner} ) {
+        return $self->{tmux_send_runner}->( $pane_id, $text );
+    }
+    system( 'tmux', 'send-keys', '-t', $pane_id, '-l', '--', $text ) == 0
+      or die "Unable to send literal text to tmux pane $pane_id\n";
+    system( 'tmux', 'send-keys', '-t', $pane_id, 'Enter' ) == 0
+      or die "Unable to send Enter to tmux pane $pane_id\n";
+    return 1;
+}
+
+sub codex_live_pane_prompt {
+    my ( $self, $summary ) = @_;
+    my @lines;
+    push @lines, $summary->{text} if defined $summary->{text} && $summary->{text} ne q{};
+    push @lines, '[caption] ' . $summary->{caption} if defined $summary->{caption} && $summary->{caption} ne q{};
+    my @media = $self->telegram_session_media_summary_lines($summary);
+    if (@media) {
+        push @lines, 'Any *_local_path values below are already downloaded locally for this active Codex session.';
+        push @lines, @media;
+    }
+    return join "\n", @lines;
+}
+
+sub codex_session_transcript_size {
+    my ( $self, $path ) = @_;
+    return 0 if !defined $path || !-f $path;
+    return -s $path;
+}
+
+sub codex_session_transcript_events_since {
+    my ( $self, $path, $offset ) = @_;
+    return ( 0 ) if !defined $path || !-f $path;
+    $offset = 0 if !defined $offset;
+    open my $fh, '<', $path or die "Unable to read $path: $!";
+    seek $fh, $offset, 0 or die "Unable to seek $path: $!";
+    my @events;
+    while ( my $line = <$fh> ) {
+        my $decoded = eval { decode_json($line) };
+        next if $@ || ref($decoded) ne 'HASH';
+        my $event = $self->codex_session_transcript_event_from_record($decoded);
+        push @events, $event if $event;
+    }
+    my $next_offset = tell($fh);
+    close $fh;
+    return ( $next_offset, @events );
+}
+
+sub codex_session_transcript_event_from_record {
+    my ( $self, $row ) = @_;
+    return undef if !$row || ref($row) ne 'HASH';
+    return undef if ( $row->{type} || q{} ) ne 'response_item';
+    my $payload = $row->{payload} || {};
+    return undef if ref($payload) ne 'HASH';
+    return undef if ( $payload->{type} || q{} ) ne 'message';
+    my $role = $payload->{role} || q{};
+    return undef if $role ne 'user' && $role ne 'assistant';
+    my $text = $self->codex_session_message_text_from_payload($payload);
+    return undef if !defined $text || $text eq q{};
+    return {
+        role  => $role,
+        text  => $text,
+        phase => $payload->{phase},
+    };
+}
+
+sub process_tui_live_outbound_transcript {
+    my ( $self, $session_id, $paths, $state, %args ) = @_;
+    return 0 if !defined $session_id || $session_id eq q{};
+    my $pairing = $self->read_listener_pairing_state($paths);
+    my $chat_id = $pairing->{paired_chat_id};
+    return 0 if !defined $chat_id || $chat_id eq q{};
+    my $transcript = $self->codex_session_transcript_path( $self->resolve_codex_reply_session_id );
+    return 0 if !defined $transcript || !-f $transcript;
+    my $cursor = $self->read_listener_offset( $paths->{transcript_cursor_file} );
+    if ( !defined $cursor ) {
+        $cursor = $self->codex_session_transcript_size($transcript);
+        $self->write_listener_offset( $paths->{transcript_cursor_file}, $cursor );
+        return 0;
+    }
+    my ( $next_cursor, @events ) = $self->codex_session_transcript_events_since( $transcript, $cursor );
+    $cursor = $next_cursor;
+    for my $event (@events) {
+        if ( !$state->{active} ) {
+            next if $event->{role} ne 'user';
+            next if $event->{text} =~ /\A\[Telegram chat /;
+            my $reporter = $self->start_telegram_verbose_reporter(
+                chat_id => $chat_id,
+                on_error => sub {
+                    my ($error) = @_;
+                    push @{ $args{progress_errors} || [] }, { chat_id => $chat_id, error => $error };
+                    return 1;
+                },
+            );
+            my $typing_error = $self->send_telegram_typing_action_for_chat($chat_id);
+            $state->{active} = {
+                chat_id       => $chat_id,
+                reporter      => $reporter,
+                seen_progress => {},
+            };
+            eval { $reporter->{emit}->('Resuming active Codex session') } if $reporter;
+            next;
+        }
+        next if $event->{role} ne 'assistant';
+        my $reporter = $state->{active}{reporter};
+        if ( ( $event->{phase} || q{} ) eq 'commentary' ) {
+            for my $line ( grep { defined $_ && $_ ne q{} } split /\n+/, $event->{text} ) {
+                next if $state->{active}{seen_progress}{$line}++;
+                eval { $reporter->{emit}->($line) } if $reporter;
+            }
+            next;
+        }
+        if ( ( $event->{phase} || q{} ) eq 'final_answer' ) {
+            $self->dispatch_listener_reply(
+                chat_id       => $chat_id,
+                reply_message => $event->{text},
+            );
+            eval { $reporter->{finish}->() } if $reporter;
+            $state->{active} = undef;
+        }
+    }
+    $self->write_listener_offset( $paths->{transcript_cursor_file}, $cursor );
+    return scalar @events;
 }
 
 sub with_listener_typing_status {
@@ -2132,9 +2433,18 @@ sub start_listener_verbose_reporter {
     my ( $self, $summary, %args ) = @_;
     return undef if !$self->listener_should_send_typing( $summary, 'codex-session' );
     return undef if !defined $summary->{chat} || !defined $summary->{chat}{id};
-    return undef if !defined $summary->{message_id};
-    my $chat_id = $summary->{chat}{id};
-    my $reply_to_message_id = $summary->{message_id};
+    return $self->start_telegram_verbose_reporter(
+        chat_id             => $summary->{chat}{id},
+        reply_to_message_id => $summary->{message_id},
+        %args,
+    );
+}
+
+sub start_telegram_verbose_reporter {
+    my ( $self, %args ) = @_;
+    my $chat_id = $args{chat_id};
+    return undef if !defined $chat_id || $chat_id eq q{};
+    my $reply_to_message_id = $args{reply_to_message_id};
     my $on_error = $args{on_error};
     my @lines;
     my $message_id;
@@ -2151,9 +2461,13 @@ sub start_listener_verbose_reporter {
                 $self->telegram_post(
                     'sendMessage',
                     {
-                        chat_id             => $chat_id,
-                        reply_to_message_id => $reply_to_message_id,
-                        text                => $text,
+                        chat_id => $chat_id,
+                        (
+                            defined $reply_to_message_id
+                            ? ( reply_to_message_id => $reply_to_message_id )
+                            : ()
+                        ),
+                        text => $text,
                     }
                 );
             };
@@ -2190,6 +2504,29 @@ sub start_listener_verbose_reporter {
         emit   => $emit,
         finish => sub { return 1; },
     };
+}
+
+sub send_telegram_typing_action_for_chat {
+    my ( $self, $chat_id ) = @_;
+    return undef if !defined $chat_id || $chat_id eq q{};
+    my $error = eval {
+        $self->telegram_post(
+            'sendChatAction',
+            {
+                chat_id => $chat_id,
+                action  => 'typing',
+            }
+        );
+        return undef;
+    };
+    if ( my $failure = $@ ) {
+        chomp $failure;
+        return {
+            chat_id => $chat_id,
+            error   => $failure,
+        };
+    }
+    return undef;
 }
 
 sub listener_verbose_trimmed_lines {

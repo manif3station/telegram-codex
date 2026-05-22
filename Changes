@@ -1,3 +1,13 @@
+0.38 2026-05-22
+    - added live Telegram/TUI synchronization through tmux-backed session
+      injection plus transcript mirroring, so Telegram-originated requests
+      can run inside the already-open Codex TUI session and TUI-originated
+      turns can be mirrored back to the paired Telegram chat with the same
+      verbose progress and final answer flow
+    - added tmux/ps discovery, live pane prompt injection, TUI outbound
+      transcript polling, and fallback coverage around progress-callback,
+      verbose-kickoff, typing-failure, and live-pane timeout paths
+
 0.37 2026-05-22
     - hydrated managed Telegram replies from recent persisted Codex session
       transcript rows so Telegram-side follow-up work can reuse TUI-side

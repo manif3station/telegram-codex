@@ -15,6 +15,17 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-306`:
+  - `Files=6, Tests=585`
+  - `Result: PASS`
+- Docker covered gate for `DD-306`:
+  - `Files=6, Tests=585`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Live session sync regressions:
+  - managed Telegram replies now prefer injection into the already-open tmux-backed Codex TUI pane for the mapped session before falling back to detached `codex exec resume`
+  - TUI-originated turns are mirrored back to the paired Telegram chat from the same shared transcript stream using `transcript.cursor`
+  - default `ps` / `tmux` discovery, cursor bootstrap, verbose kickoff failure, progress-callback failure, direct typing failure, and live-pane timeout paths are all covered directly
 - Docker functional gate for `DD-305`:
   - `Files=6, Tests=545`
   - `Result: PASS`
