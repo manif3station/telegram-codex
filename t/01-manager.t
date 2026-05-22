@@ -1410,7 +1410,8 @@ sub new_manager {
     like( $resume_calls[0][1], qr/text=hello2/, 'managed listener mode passes the inbound Telegram text into the Codex reply prompt' );
     is( $post_calls[0][0], 'sendChatAction', 'managed listener mode sends a typing action before the Codex-generated reply' );
     is( $post_calls[0][1]{action}, 'typing', 'managed listener mode uses Telegram typing status while the Codex reply is being generated' );
-    is( $post_calls[-1][1]{text}, 'This is a real Codex session reply.', 'managed listener mode sends the Codex-generated reply instead of a placeholder' );
+    like( $post_calls[1][1]{text}, qr/Codex verbose/, 'managed listener mode now opens the verbose trace before the final reply' );
+    is( $post_calls[-2][1]{text}, 'This is a real Codex session reply.', 'managed listener mode sends the Codex-generated reply instead of a placeholder' );
 }
 
 {
@@ -1474,10 +1475,11 @@ sub new_manager {
     like( $resume_calls[0][1], qr/text=Hi/, 'collector-owned check-message passes the inbound text into the Codex reply prompt' );
     is( $post_calls[0][0], 'sendChatAction', 'collector-owned check-message sends a typing action before the reply in managed Codex-session mode' );
     is( $post_calls[0][1]{action}, 'typing', 'collector-owned check-message uses Telegram typing status while Codex is generating the reply' );
-    is( $post_calls[-1][0], 'sendMessage', 'collector-owned check-message sends the final Telegram reply after the typing action' );
-    is( $post_calls[-1][1]{text}, 'Collector reply from Codex session.', 'collector-owned check-message sends the Codex-generated reply text' );
+    is( $post_calls[-2][0], 'sendMessage', 'collector-owned check-message sends the final Telegram reply after the typing action and verbose trace' );
+    is( $post_calls[-2][1]{text}, 'Collector reply from Codex session.', 'collector-owned check-message sends the Codex-generated reply text' );
     is( $typing_events[0], 'guard-start', 'collector-owned check-message starts the typing guard before managed reply work' );
-    is( $typing_events[1], 'resume', 'collector-owned check-message resumes Codex while the typing guard is active' );
+    is( $typing_events[1], 'send', 'collector-owned check-message emits the initial verbose trace while the typing guard is active' );
+    is( $typing_events[2], 'resume', 'collector-owned check-message resumes Codex while the typing guard is active' );
     ok( scalar( grep { $_ eq 'send' } @typing_events ) >= 1, 'collector-owned check-message performs Telegram sends while the typing guard remains active' );
     is( $typing_events[-1], 'guard-stop', 'collector-owned check-message stops the typing guard after Telegram delivery work finishes' );
 }
@@ -1502,7 +1504,7 @@ sub new_manager {
                         update_id => 301,
                         message   => {
                             message_id => 44,
-                            text       => 'Run all the tests and check if any test not good enough',
+                            text       => 'These make it better',
                             chat       => { id => 66, type => 'private' },
                         },
                     },
@@ -1544,18 +1546,18 @@ sub new_manager {
     $manager->write_codex_target_session_id( 'skills', 'session-from-ledger' );
     my $result = $manager->execute_check_messages( 'skills', 1, 0 );
     my @texts = map { $_->[1]{text} } grep { $_->[1]{text} } @post_calls;
-    is( $result->{processed}, 1, 'task-style collector-owned check-message processes the inbound Telegram task request' );
-    is( $result->{replied}, 1, 'task-style collector-owned check-message still sends the final Telegram reply' );
-    is_deeply( \@typing_events, [ 'typing-start', 'resume', 'send', 'typing-stop' ], 'task-style collector-owned check-message keeps typing around the managed Codex work through final delivery' );
-    is( scalar @resume_calls, 1, 'task-style collector-owned check-message resumes Codex once when the first reply is substantive' );
-    is( $post_calls[1][0], 'sendMessage', 'task-style collector-owned check-message sends a verbose progress message before the final reply' );
-    like( $post_calls[1][1]{text}, qr/Codex verbose/, 'task-style collector-owned check-message opens the progress stream with a verbose trace message' );
-    like( $post_calls[1][1]{text}, qr/Resuming active Codex session/, 'task-style collector-owned check-message emits an immediate verbose kickoff line before richer Codex events arrive' );
-    ok( scalar( grep { $_->[0] eq 'editMessageText' } @post_calls ) >= 1, 'task-style collector-owned check-message updates the verbose trace in place' );
-    like( join( "\n---\n", @texts ), qr/Agent: Planning the next step/, 'task-style collector-owned check-message streams real agent events into Telegram' );
-    like( join( "\n---\n", @texts ), qr/Running command: \/bin\/bash -lc pwd/, 'task-style collector-owned check-message streams real command-start events into Telegram' );
-    like( join( "\n---\n", @texts ), qr/Final reply sent/, 'task-style collector-owned check-message records final delivery in the verbose trace' );
-    is( $post_calls[-2][1]{text}, 'Done. Final task result.', 'task-style collector-owned check-message still sends the final substantive Telegram reply' );
+    is( $result->{processed}, 1, 'collector-owned check-message processes the inbound Telegram message' );
+    is( $result->{replied}, 1, 'collector-owned check-message still sends the final Telegram reply' );
+    is_deeply( \@typing_events, [ 'typing-start', 'resume', 'send', 'typing-stop' ], 'collector-owned check-message keeps typing around the managed Codex work through final delivery' );
+    is( scalar @resume_calls, 1, 'collector-owned check-message resumes Codex once when the first reply is substantive' );
+    is( $post_calls[1][0], 'sendMessage', 'collector-owned check-message sends a verbose progress message before the final reply even for conversational follow-up text' );
+    like( $post_calls[1][1]{text}, qr/Codex verbose/, 'collector-owned check-message opens the progress stream with a verbose trace message' );
+    like( $post_calls[1][1]{text}, qr/Resuming active Codex session/, 'collector-owned check-message emits an immediate verbose kickoff line before richer Codex events arrive' );
+    ok( scalar( grep { $_->[0] eq 'editMessageText' } @post_calls ) >= 1, 'collector-owned check-message updates the verbose trace in place' );
+    like( join( "\n---\n", @texts ), qr/Agent: Planning the next step/, 'collector-owned check-message streams real agent events into Telegram' );
+    like( join( "\n---\n", @texts ), qr/Running command: \/bin\/bash -lc pwd/, 'collector-owned check-message streams real command-start events into Telegram' );
+    like( join( "\n---\n", @texts ), qr/Final reply sent/, 'collector-owned check-message records final delivery in the verbose trace' );
+    is( $post_calls[-2][1]{text}, 'Done. Final task result.', 'collector-owned check-message still sends the final substantive Telegram reply' );
 }
 
 {
@@ -1659,8 +1661,9 @@ sub new_manager {
     is( $result->{replied}, 0, 'collector-owned check-message does not count a failed managed Codex reply generation as replied' );
     like( $result->{reply_errors}[0]{error}, qr/Codex resume failed for Telegram reply/, 'collector-owned check-message records the managed Codex failure' );
     is_deeply( \@typing_events, [ 'guard-start', 'resume', 'guard-stop' ], 'typing guard cleanup still runs when the managed Codex reply generation fails' );
-    is( scalar @post_calls, 1, 'collector-owned check-message does not attempt a final send when managed Codex reply generation fails' );
-    is( $post_calls[0][0], 'sendChatAction', 'collector-owned check-message only sent the typing action before the managed reply failure' );
+    is( scalar @post_calls, 2, 'collector-owned check-message sends typing plus the initial verbose trace before the managed reply failure' );
+    is( $post_calls[0][0], 'sendChatAction', 'collector-owned check-message sends typing before the managed reply failure' );
+    like( $post_calls[1][1]{text}, qr/Codex verbose/, 'collector-owned check-message sends the initial verbose trace before the managed reply failure' );
 }
 
 {
@@ -1715,7 +1718,7 @@ sub new_manager {
     is( $result->{processed}, 1, 'collector-owned check-message still records the inbound message when final Telegram delivery fails' );
     is( $result->{replied}, 0, 'collector-owned check-message does not count a failed final Telegram delivery as replied' );
     like( $result->{reply_errors}[0]{error}, qr/sendMessage: 500 Internal Server Error/, 'collector-owned check-message records the final Telegram delivery failure' );
-    is_deeply( \@typing_events, [ 'guard-start', 'resume', 'send', 'guard-stop' ], 'typing guard cleanup still runs after a final Telegram delivery failure' );
+    is_deeply( \@typing_events, [ 'guard-start', 'send', 'resume', 'send', 'guard-stop' ], 'typing guard cleanup still runs after a final Telegram delivery failure even with the initial verbose trace send' );
 }
 
 {
@@ -1862,6 +1865,10 @@ sub new_manager {
 
 {
     my $manager = new_manager;
+    ok(
+        $manager->listener_should_stream_progress( { text => 'These make it better', chat => { id => 1 }, message_id => 2 } ),
+        'listener_should_stream_progress stays on for conversational managed Codex replies'
+    );
     ok(
         $manager->telegram_message_requires_completion( { text => 'Run all the tests and check if any test not good enough' } ),
         'telegram_message_requires_completion recognizes run-and-check task requests as long-running work'
@@ -2431,7 +2438,7 @@ sub new_manager {
     is( scalar @download_calls, 1, 'collector-owned check-message downloads inbound managed media before asking Codex to reply' );
     like( $resume_calls[0][1], qr/photo_local_path=.*update-103.*photo-103\.jpg/, 'collector-owned check-message passes the downloaded photo local path into the Codex reply prompt' );
     like( $resume_calls[0][1], qr/already downloaded locally for this active Codex session/i, 'collector-owned check-message tells Codex the downloaded media is locally available' );
-    is( $post_calls[-1][1]{text}, 'Photo processed from local file.', 'collector-owned check-message still sends the Codex-generated text reply after downloading photo media' );
+    is( $post_calls[-2][1]{text}, 'Photo processed from local file.', 'collector-owned check-message still sends the Codex-generated text reply after downloading photo media' );
 }
 
 {

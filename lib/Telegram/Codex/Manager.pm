@@ -1922,7 +1922,7 @@ sub listener_noop_guard {
 sub listener_should_stream_progress {
     my ( $self, $summary ) = @_;
     return 0 if !$self->listener_should_send_typing( $summary, 'codex-session' );
-    return $self->telegram_message_requires_completion($summary) ? 1 : 0;
+    return 1;
 }
 
 sub listener_progress_text {
@@ -2312,7 +2312,7 @@ sub read_text_file {
 sub _build_ua {
     my ($self) = @_;
     my $ua = LWP::UserAgent->new(
-            agent   => 'telegram-codex/' . ( $self->env_value('VERSION') || '0.32' ),
+            agent   => 'telegram-codex/' . ( $self->env_value('VERSION') || '0.33' ),
         timeout => 60,
     );
     return $ua;

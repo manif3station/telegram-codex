@@ -15,6 +15,17 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-301`:
+  - `Files=6, Tests=488`
+  - `Result: PASS`
+- Docker covered gate for `DD-301`:
+  - `Files=6, Tests=488`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Always-on verbose regressions:
+  - managed Telegram Codex-session replies now open the verbose trace by default instead of only for classifier-matched task phrases
+  - conversational follow-up messages like `These make it better` now show verbose progress before the final reply
+  - managed reply failure-path tests now prove the initial verbose trace is still attempted before final reply generation or delivery failures
 - Docker functional gate for `DD-300`:
   - `Files=6, Tests=484`
   - `Result: PASS`

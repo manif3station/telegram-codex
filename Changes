@@ -1,3 +1,14 @@
+0.33 2026-05-22
+    - removed the remaining managed Telegram verbose gate so every
+      collector-owned Codex-session reply now opens the verbose trace by
+      default, including conversational follow-up messages like `These make
+      it better`
+    - kept the immediate `Resuming active Codex session` kickoff line so the
+      Telegram trace appears before richer `codex exec resume --json` events
+      arrive
+    - updated the managed reply regressions so always-on verbose tracing is
+      proven for ordinary conversational Telegram requests and failure paths
+
 0.32 2026-05-22
     - widened managed Telegram task detection so requests like `Run all the
       tests and check if any test not good enough` now open the verbose
