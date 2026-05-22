@@ -36,14 +36,15 @@ When `dashboard telegram-codex.start` runs with `TELEGRAM_BOT_TOKEN` and `TELEGR
 3. ensures there is exactly one collector named `telegram-codex-<session-id>` in `~/.developer-dashboard/config/config.json`
 4. removes duplicate collector entries for that session if they exist and also removes stale same-workspace `telegram-codex-*` collectors that still point at the wrong session id
 5. writes the active Codex reply target into `~/.telegram-codex/<session-id>/codex.session`
-6. restarts the DD collector with:
+6. preserves or creates the pairing-security runtime for that session under `~/.telegram-codex/<session-id>/pairing.json`
+7. restarts the DD collector with:
    - `cwd` fixed to the workspace where `dashboard telegram-codex.start` was run
    - `command` fixed to `dashboard telegram-codex.check-message <session-id>`
    - `interval` fixed to `5`
    - `rotation.lines` fixed to `100`
    - `mode` fixed to `singleton`
-7. recycles any already-running `check-message <session-id>` worker for that session so the new managed behavior replaces stale long-lived code immediately
-8. launches the real Codex binary
+8. recycles any already-running `check-message <session-id>` worker for that session so the new managed behavior replaces stale long-lived code immediately
+9. launches the real Codex binary
 
 `dashboard telegram-codex.start --version` is a pure metadata query that proxies the real underlying Codex CLI version output DD expects. DD can probe it safely without creating or restarting collectors.
 Successful managed startup now hands off with `exec`, so the wrapper process does not stay resident as an extra long-lived `cli/start` parent after Codex takes over. Ambient workspace `OLLAMA_MODEL` is no longer treated as an automatic provider override for Telegram-managed startup. If Telegram-owned startup really needs the Ollama launch profile, set `TELEGRAM_CODEX_OLLAMA_MODEL` explicitly.
@@ -130,6 +131,12 @@ Send a text reply:
 dashboard telegram-codex.reply <CHAT_ID> 'Hello from Codex'
 ```
 
+Pair the current workspace session to the pending Telegram chat challenge:
+
+```bash
+dashboard telegram-codex.pair <HEX_CODE>
+```
+
 Send a photo:
 
 ```bash
@@ -174,6 +181,7 @@ While Codex is processing a managed reply, the worker keeps Telegram `typing...`
 Instead of the old placeholder progress heartbeat, the worker now streams real step-by-step Codex verbose events from `codex exec resume --json` into one Telegram trace message that updates in place and stays visible in chat.
 Managed Codex-session replies now open that verbose trace by default, including short conversational follow-up messages, and still emit an immediate kickoff line before richer Codex JSON events arrive.
 If a Telegram verbose progress update fails mid-run, the worker now records that as a non-fatal progress error and still attempts final delivery. If the resumed Codex subprocess exits early or returns an empty reply, the worker now preserves exit status and stderr-tail detail for diagnosis instead of collapsing to a generic failure.
+Before any managed Codex-session reply is allowed, the session now enforces a pairing gate. The first unpaired Telegram message receives one local pairing command reply in the form `d2 telegram-codex.pair <hexcode>`. If the same unpaired user keeps sending messages before that local pair command is run, the worker ignores them. Once the local pair command succeeds, only that paired chat can drive the session; other chats are ignored.
 For inbound non-text updates, the worker downloads supported attachments into `~/.telegram-codex/<session-id>/downloads/` before asking Codex to reply. Downloaded Telegram photos and image documents are attached to the resumed Codex session as real image inputs. Other downloaded media still flows by local path for tool-based inspection. Codex can send a non-text reply back by returning directive lines:
 
 ```text
@@ -195,11 +203,13 @@ The skill keeps per-session Telegram state under:
 - `~/.telegram-codex/<session-id>/listener.offset`
 - `~/.telegram-codex/<session-id>/listener.inbox.jsonl`
 - `~/.telegram-codex/<session-id>/codex.session`
+- `~/.telegram-codex/<session-id>/pairing.json`
 - `~/.telegram-codex/<session-id>/downloads/`
 - `~/.telegram-codex/<session-id>/audit.enabled`
 - `~/.telegram-codex/<session-id>/audit.jsonl`
 
 `codex.session` stores the actual Codex session that Telegram replies should resume. That target may be different from the collector session name when `TICKET_REF` maps the workspace to a saved Codex session.
+`pairing.json` stores the paired Telegram chat id or the pending one-time local pairing challenge for that session.
 `listener.offset` is healed from `listener.inbox.jsonl` immediately when inbox-ledger recovery proves a newer next offset.
 `downloads/` stores inbound media that the managed collector downloaded for Codex inspection before reply generation.
 `audit.enabled` opts the collector-owned worker into runtime audit capture.
@@ -211,6 +221,7 @@ The skill keeps per-session Telegram state under:
 - Do not claim outbound video send support; text, photo, audio, and document sending are implemented.
 - Do not claim audio, voice, video, or PDF bytes were attached directly to the model; today only downloaded Telegram photos and image documents are attached as real Codex image inputs.
 - Do expect the managed Telegram path to leave a readable verbose progress trace in chat instead of deleting a generic heartbeat message.
+- Do expect managed Telegram sessions to stay locked until a local `dashboard telegram-codex.pair <hexcode>` command pairs one Telegram chat to that session.
 - Do use `dashboard telegram-codex.start` for the real always-on path.
 - Do treat `dashboard telegram-codex.check-message <session-id>` as a managed collector loop, not as a short one-off polling command.
 - Do expect managed Telegram task replies to answer directly without boilerplate prefaces and to do the real in-session work before replying instead of sending a promise such as `will be done`.

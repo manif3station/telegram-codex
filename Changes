@@ -1,3 +1,16 @@
+0.34 2026-05-22
+    - added per-session pairing security for managed Telegram Codex-session
+      replies, so only a locally paired Telegram chat can drive a session
+    - the first unpaired inbound Telegram message now receives exactly one
+      local pairing command reply in the form `d2 telegram-codex.pair
+      <hexcode>`, and later unpaired messages are ignored until pairing is
+      completed locally
+    - added `dashboard telegram-codex.pair <hexcode>` plus session pairing
+      state under `~/.telegram-codex/<session-id>/pairing.json`
+    - made local pairing commands fall back to the workspace session id when
+      no explicit Telegram session env is set, so the local pair command
+      binds to the same collector session created by `telegram-codex.start`
+
 0.33 2026-05-22
     - removed the remaining managed Telegram verbose gate so every
       collector-owned Codex-session reply now opens the verbose trace by

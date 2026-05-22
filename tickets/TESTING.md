@@ -15,6 +15,18 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-302`:
+  - `Files=6, Tests=525`
+  - `Result: PASS`
+- Docker covered gate for `DD-302`:
+  - `Files=6, Tests=525`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Pairing-security regressions:
+  - the first unpaired inbound Telegram message now gets exactly one local pairing command reply in the form `d2 telegram-codex.pair <hexcode>`
+  - repeated unpaired messages are ignored until the local pair command succeeds
+  - `dashboard telegram-codex.pair <hexcode>` binds the pending Telegram chat to the current workspace session
+  - after pairing, only that paired chat can drive the managed Codex session and outsider chats are ignored
 - Docker functional gate for `DD-301`:
   - `Files=6, Tests=488`
   - `Result: PASS`

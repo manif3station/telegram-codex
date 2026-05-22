@@ -2,6 +2,7 @@
 use strict;
 use warnings;
 
+use File::Temp qw(tempdir);
 use JSON::XS qw(decode_json);
 use Test::More;
 
@@ -285,6 +286,47 @@ sub capture_run {
 }
 
 {
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $manager = Telegram::Codex::Manager->new(
+        cwd       => $runtime,
+        home      => $runtime,
+        env       => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'cli-pair',
+        },
+    );
+    my $paths = $manager->listener_paths_for_session('cli-pair');
+    $manager->write_listener_pairing_state(
+        $paths,
+        {
+            pending_chat_id => 88,
+            pairing_code    => 'deadbeefcafebabe',
+        },
+    );
+    my ( $rc, $stdout, $stderr ) = capture_run(
+        sub {
+            my ( $out_fh, $err_fh ) = @_;
+            my $manager = Telegram::Codex::Manager->new(
+                cwd       => $runtime,
+                home      => $runtime,
+                stdout_fh => $out_fh,
+                stderr_fh => $err_fh,
+                env       => {
+                    TELEGRAM_BOT_TOKEN         => 'token-xyz',
+                    TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+                    CODEX_SESSION_ID           => 'cli-pair',
+                },
+            );
+            return $manager->main_pair('deadbeefcafebabe');
+        }
+    );
+    is( $rc, 0, 'main_pair succeeds for the pending challenge code' );
+    is( $stderr, q{}, 'main_pair leaves stderr empty on success' );
+    is( decode_json($stdout)->{paired_chat_id}, 88, 'main_pair prints the paired chat id' );
+}
+
+{
     my ( $rc, $stdout, $stderr ) = capture_run(
         sub {
             my ( $out_fh, $err_fh ) = @_;
@@ -318,6 +360,7 @@ sub capture_run {
                 stderr_fh => $err_fh,
                 env       => {
                     TELEGRAM_BOT_TOKEN         => 'token-xyz',
+                    TELEGRAM_CODEX_DISABLE_PAIRING => 1,
                     TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
                     CODEX_SESSION_ID           => 'cli-listen',
                 },

@@ -53,6 +53,7 @@ sub main_install          { return shift->_run_main( 'install',          @_ ) }
 sub main_get_me           { return shift->_run_main( 'get_me',           @_ ) }
 sub main_updates          { return shift->_run_main( 'updates',          @_ ) }
 sub main_download         { return shift->_run_main( 'download',         @_ ) }
+sub main_pair            { return shift->_run_main( 'pair',            @_ ) }
 sub main_reply            { return shift->_run_main( 'reply',            @_ ) }
 sub main_send_photo       { return shift->_run_main( 'send_photo',       @_ ) }
 sub main_send_audio       { return shift->_run_main( 'send_audio',       @_ ) }
@@ -245,6 +246,32 @@ sub execute_reply {
     my $chat_id = shift @argv;
     my $text = join q{ }, @argv;
     return $self->telegram_post( 'sendMessage', { chat_id => $chat_id, text => $text } )->{result};
+}
+
+sub execute_pair {
+    my ( $self, @argv ) = @_;
+    die "Usage: dashboard telegram-codex.pair <HEX_CODE>\n" if @argv != 1;
+    my $provided_code = lc( $argv[0] // q{} );
+    die "Pair code is required\n" if $provided_code eq q{};
+    die "Pair code must be lowercase hexadecimal\n" if $provided_code !~ /\A[0-9a-f]+\z/;
+    my $paths = $self->listener_paths;
+    my $state = $self->read_listener_pairing_state($paths);
+    die "No pending Telegram pairing challenge for this session\n"
+      if !defined $state->{pending_chat_id} || !defined $state->{pairing_code} || $state->{pairing_code} eq q{};
+    die "Pair code does not match the current pending Telegram challenge\n"
+      if $provided_code ne lc( $state->{pairing_code} );
+    $state->{paired_chat_id} = $state->{pending_chat_id};
+    $state->{paired_at} = $self->now_string;
+    delete $state->{pending_chat_id};
+    delete $state->{challenge_sent_at};
+    delete $state->{pairing_code};
+    $self->write_listener_pairing_state( $paths, $state );
+    return {
+        mode           => 'pair',
+        session_id     => $self->listener_session_id,
+        paired_chat_id => $state->{paired_chat_id},
+        paired_at      => $state->{paired_at},
+    };
 }
 
 sub execute_send_photo {
@@ -464,6 +491,42 @@ sub execute_check_messages {
             my $reply_mode = $self->listener_reply_mode_for_update($reply_text);
             $summary = $self->hydrate_summary_media_paths($summary)
               if $reply_mode eq 'codex-session';
+            my $pairing_action = $self->listener_pairing_action( $summary, $paths );
+            if ( !$pairing_action->{allow} ) {
+                if ( defined $chat_id && $pairing_action->{reply_message} ) {
+                    my $sent = eval {
+                        $self->dispatch_listener_reply(
+                            chat_id             => $chat_id,
+                            reply_to_message_id => $message->{message_id},
+                            reply_message       => $pairing_action->{reply_message},
+                        );
+                        return 1;
+                    };
+                    if ( my $error = $@ ) {
+                        chomp $error;
+                        push @reply_errors, {
+                            update_id  => $summary->{update_id},
+                            chat_id    => $chat_id,
+                            message_id => $message->{message_id},
+                            error      => $error,
+                        };
+                        $self->append_listener_audit_event(
+                            $paths,
+                            'reply.failed',
+                            {
+                                update_id  => $summary->{update_id},
+                                message_id => $message->{message_id},
+                                chat_id    => $chat_id,
+                                error      => $error,
+                            },
+                        );
+                    }
+                    elsif ($sent) {
+                        $replied++;
+                    }
+                }
+                next;
+            }
             if ( defined $chat_id && $self->update_needs_listener_reply($summary) ) {
                 my $sent = eval {
                     my $runner = sub {
@@ -1490,6 +1553,92 @@ sub listener_paths_for_session {
         audit_file   => File::Spec->catfile( $runtime_dir, 'audit.jsonl' ),
         audit_flag_file => File::Spec->catfile( $runtime_dir, 'audit.enabled' ),
         target_session_file => File::Spec->catfile( $runtime_dir, 'codex.session' ),
+        pairing_state_file => File::Spec->catfile( $runtime_dir, 'pairing.json' ),
+    };
+}
+
+sub read_listener_pairing_state {
+    my ( $self, $paths ) = @_;
+    $paths ||= $self->listener_paths;
+    my $state = $self->read_json_file_or_default( $paths->{pairing_state_file}, {} );
+    $state = {} if ref($state) ne 'HASH';
+    return $state;
+}
+
+sub write_listener_pairing_state {
+    my ( $self, $paths, $state ) = @_;
+    $paths ||= $self->listener_paths;
+    $state ||= {};
+    return $self->write_text_file( $paths->{pairing_state_file}, $self->encode_pretty_json($state) );
+}
+
+sub generate_listener_pairing_code {
+    my ($self) = @_;
+    return join q{}, map { sprintf '%02x', int( rand 256 ) } 1 .. 8;
+}
+
+sub listener_pairing_command_text {
+    my ( $self, $code ) = @_;
+    return 'd2 telegram-codex.pair ' . $code;
+}
+
+sub listener_pairing_action {
+    my ( $self, $summary, $paths ) = @_;
+    $paths ||= $self->listener_paths;
+    my $pairing_disabled = $self->env_value('TELEGRAM_CODEX_DISABLE_PAIRING') || q{};
+    return { allow => 1 } if $pairing_disabled =~ /\A(?:1|true|yes|on)\z/i;
+    my $chat_id = defined $summary->{chat} ? $summary->{chat}{id} : undef;
+    return { allow => 1 } if !defined $chat_id;
+    my $state = $self->read_listener_pairing_state($paths);
+    if ( defined $state->{paired_chat_id} && $state->{paired_chat_id} ne q{} ) {
+        return { allow => 1 } if $chat_id == $state->{paired_chat_id};
+        $self->append_listener_audit_event(
+            $paths,
+            'pairing.ignored',
+            {
+                chat_id => $chat_id,
+                reason  => 'different-chat',
+            },
+        );
+        return { allow => 0 };
+    }
+    if ( defined $state->{pending_chat_id} && $state->{pending_chat_id} ne q{} ) {
+        if ( $chat_id == $state->{pending_chat_id} ) {
+            $self->append_listener_audit_event(
+                $paths,
+                'pairing.ignored',
+                {
+                    chat_id => $chat_id,
+                    reason  => 'pending-pair',
+                },
+            );
+            return { allow => 0 };
+        }
+        $self->append_listener_audit_event(
+            $paths,
+            'pairing.ignored',
+            {
+                chat_id => $chat_id,
+                reason  => 'pending-other-chat',
+            },
+        );
+        return { allow => 0 };
+    }
+    my $code = $self->generate_listener_pairing_code;
+    $state->{pending_chat_id} = $chat_id;
+    $state->{pairing_code} = $code;
+    $state->{challenge_sent_at} = $self->now_string;
+    $self->write_listener_pairing_state( $paths, $state );
+    $self->append_listener_audit_event(
+        $paths,
+        'pairing.challenge.sent',
+        {
+            chat_id => $chat_id,
+        },
+    );
+    return {
+        allow         => 0,
+        reply_message => $self->listener_pairing_command_text($code),
     };
 }
 
@@ -1530,6 +1679,7 @@ sub listener_session_id {
     my ($self) = @_;
     my $session_id = $self->env_value('TELEGRAM_CODEX_SESSION_ID');
     $session_id = $self->env_value('CODEX_SESSION_ID') if !defined $session_id || $session_id eq q{};
+    $session_id = $self->workspace_session_id if !defined $session_id || $session_id eq q{};
     return $self->normalise_session_id($session_id);
 }
 

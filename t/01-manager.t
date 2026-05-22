@@ -46,11 +46,15 @@ use Telegram::Codex::Manager;
 sub new_manager {
     my (%args) = @_;
     my $cwd = $args{cwd} || tempdir( CLEANUP => 1 );
+    my %env = (
+        TELEGRAM_CODEX_DISABLE_PAIRING => 1,
+        %{ $args{env} || {} },
+    );
     return Telegram::Codex::Manager->new(
         cwd             => $cwd,
         home            => $args{home} || $cwd,
         skill_root      => $args{skill_root},
-        env             => $args{env} || {},
+        env             => \%env,
         get_runner      => $args{get_runner},
         post_runner     => $args{post_runner},
         download_runner => $args{download_runner},
@@ -1558,6 +1562,352 @@ sub new_manager {
     like( join( "\n---\n", @texts ), qr/Running command: \/bin\/bash -lc pwd/, 'collector-owned check-message streams real command-start events into Telegram' );
     like( join( "\n---\n", @texts ), qr/Final reply sent/, 'collector-owned check-message records final delivery in the verbose trace' );
     is( $post_calls[-2][1]{text}, 'Done. Final task result.', 'collector-owned check-message still sends the final substantive Telegram reply' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my @resume_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_DISABLE_PAIRING => 0,
+            TELEGRAM_BOT_TOKEN             => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR     => $runtime,
+            CODEX_SESSION_ID               => 'pairing-session',
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 9001,
+                        message   => {
+                            message_id => 301,
+                            text       => 'Hi from unpaired chat',
+                            chat       => { id => 707, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        codex_resume_runner => sub {
+            push @resume_calls, [@_];
+            return 'unexpected';
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 901, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    my $result = $manager->execute_check_messages( 'pairing-session', 1, 0 );
+    my $state = $manager->read_listener_pairing_state( $manager->listener_paths_for_session('pairing-session') );
+    is( $result->{processed}, 1, 'pairing gate still records the unpaired inbound message' );
+    is( $result->{replied}, 1, 'pairing gate sends one pairing command reply for the first unpaired message' );
+    is( scalar @resume_calls, 0, 'pairing gate does not resume Codex before the session is paired' );
+    is( $post_calls[0][0], 'sendMessage', 'pairing gate sends the pairing command through a normal Telegram reply' );
+    like( $post_calls[0][1]{text}, qr/\Ad2 telegram-codex\.pair [0-9a-f]{16}\z/, 'pairing gate replies with the local pairing command and a random hex code' );
+    is( $state->{pending_chat_id}, 707, 'pairing gate records the pending chat id for the first unpaired user' );
+    is( $state->{pairing_code}, ( split / /, $post_calls[0][1]{text} )[-1], 'pairing gate persists the same challenge code it returned to Telegram' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_DISABLE_PAIRING => 0,
+            TELEGRAM_BOT_TOKEN             => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR     => $runtime,
+            CODEX_SESSION_ID               => 'pairing-session',
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 9002,
+                        message   => {
+                            message_id => 302,
+                            text       => 'Still talking before pairing',
+                            chat       => { id => 707, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 902, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    $manager->write_listener_pairing_state(
+        $manager->listener_paths_for_session('pairing-session'),
+        {
+            pending_chat_id => 707,
+            pairing_code    => 'deadbeefcafebabe',
+        },
+    );
+    my $result = $manager->execute_check_messages( 'pairing-session', 1, 0 );
+    is( $result->{processed}, 1, 'pairing gate still records repeated unpaired messages' );
+    is( $result->{replied}, 0, 'pairing gate ignores repeated messages from the pending unpaired chat until the local pair command runs' );
+    is( scalar @post_calls, 0, 'pairing gate sends no second challenge reply before pairing is completed locally' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my @resume_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_DISABLE_PAIRING => 0,
+            TELEGRAM_BOT_TOKEN             => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR     => $runtime,
+            CODEX_SESSION_ID               => 'pairing-session',
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 90021,
+                        message   => {
+                            message_id => 3021,
+                            text       => 'Second unpaired chat should be ignored',
+                            chat       => { id => 808, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        codex_resume_runner => sub {
+            push @resume_calls, [@_];
+            return 'unexpected';
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 9021, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    $manager->write_listener_pairing_state(
+        $manager->listener_paths_for_session('pairing-session'),
+        {
+            pending_chat_id => 707,
+            pairing_code    => 'deadbeefcafebabe',
+        },
+    );
+    my $result = $manager->execute_check_messages( 'pairing-session', 1, 0 );
+    is( $result->{processed}, 1, 'pairing gate still records outsider messages while another chat has the pending challenge' );
+    is( $result->{replied}, 0, 'pairing gate ignores a different unpaired chat while the pending challenge belongs to someone else' );
+    is( scalar @resume_calls, 0, 'pairing gate does not resume Codex for a different unpaired chat while pairing is pending elsewhere' );
+    is( scalar @post_calls, 0, 'pairing gate does not send a second challenge to a different unpaired chat while one is already pending' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @post_calls;
+    my @resume_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_DISABLE_PAIRING => 0,
+            TELEGRAM_BOT_TOKEN             => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR     => $runtime,
+            CODEX_SESSION_ID               => 'pairing-session',
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 90022,
+                        message   => {
+                            message_id => 3022,
+                            text       => 'First pairing challenge send should fail cleanly',
+                            chat       => { id => 909, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        codex_resume_runner => sub {
+            push @resume_calls, [@_];
+            return 'unexpected';
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            die "Telegram POST failed for sendMessage: 500 Pairing challenge send failure\n" if $method eq 'sendMessage';
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 9022, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    my $result = $manager->execute_check_messages( 'pairing-session', 1, 0 );
+    my $state = $manager->read_listener_pairing_state( $manager->listener_paths_for_session('pairing-session') );
+    is( $result->{processed}, 1, 'pairing gate still records the first unpaired message when the challenge reply send fails' );
+    is( $result->{replied}, 0, 'pairing gate does not count a failed challenge reply as replied' );
+    is( scalar @resume_calls, 0, 'pairing gate still does not resume Codex when the challenge reply send fails' );
+    like( $result->{reply_errors}[0]{error}, qr/Pairing challenge send failure/, 'pairing gate records the challenge reply send failure' );
+    is( $state->{pending_chat_id}, 909, 'pairing gate still persists the pending chat after a failed challenge reply send' );
+    is( scalar @post_calls, 1, 'pairing gate attempts the challenge reply once when the send fails' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_DISABLE_PAIRING => 0,
+            TELEGRAM_BOT_TOKEN             => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR     => $runtime,
+            CODEX_SESSION_ID               => 'pairing-session',
+        },
+    );
+    my $paths = $manager->listener_paths_for_session('pairing-session');
+    $manager->write_listener_pairing_state(
+        $paths,
+        {
+            pending_chat_id => 707,
+            pairing_code    => 'deadbeefcafebabe',
+        },
+    );
+    my $result = $manager->execute_pair('deadbeefcafebabe');
+    my $state = $manager->read_listener_pairing_state($paths);
+    is( $result->{paired_chat_id}, 707, 'execute_pair pairs the pending Telegram chat to the current session' );
+    is( $state->{paired_chat_id}, 707, 'execute_pair persists the paired chat id' );
+    ok( !exists $state->{pairing_code}, 'execute_pair clears the consumed challenge code' );
+    ok( !exists $state->{pending_chat_id}, 'execute_pair clears the pending chat after successful pairing' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @resume_calls;
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_DISABLE_PAIRING => 0,
+            TELEGRAM_BOT_TOKEN             => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR     => $runtime,
+            CODEX_SESSION_ID               => 'pairing-session',
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 9003,
+                        message   => {
+                            message_id => 303,
+                            text       => 'Now do the work',
+                            chat       => { id => 707, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        codex_resume_runner => sub {
+            push @resume_calls, [@_];
+            return 'Paired reply.';
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 903, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    $manager->write_listener_pairing_state(
+        $manager->listener_paths_for_session('pairing-session'),
+        {
+            paired_chat_id => 707,
+            paired_at      => '2026-05-22 12:00:00',
+        },
+    );
+    $manager->write_codex_target_session_id( 'pairing-session', 'paired-session-target' );
+    my $result = $manager->execute_check_messages( 'pairing-session', 1, 0 );
+    is( $result->{replied}, 1, 'paired chat resumes normal reply behavior after local pairing' );
+    is( scalar @resume_calls, 1, 'paired chat is allowed through to the Codex session' );
+    is( $post_calls[-2][1]{text}, 'Paired reply.', 'paired chat still receives the final Codex reply text' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my @resume_calls;
+    my @post_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_DISABLE_PAIRING => 0,
+            TELEGRAM_BOT_TOKEN             => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR     => $runtime,
+            CODEX_SESSION_ID               => 'pairing-session',
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 9004,
+                        message   => {
+                            message_id => 304,
+                            text       => 'Different chat should be ignored',
+                            chat       => { id => 808, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        codex_resume_runner => sub {
+            push @resume_calls, [@_];
+            return 'unexpected';
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 904, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+    );
+    $manager->write_listener_pairing_state(
+        $manager->listener_paths_for_session('pairing-session'),
+        {
+            paired_chat_id => 707,
+            paired_at      => '2026-05-22 12:00:00',
+        },
+    );
+    my $result = $manager->execute_check_messages( 'pairing-session', 1, 0 );
+    is( $result->{processed}, 1, 'paired-session security still records the ignored outsider message' );
+    is( $result->{replied}, 0, 'paired-session security ignores messages from unpaired chats after pairing is complete' );
+    is( scalar @resume_calls, 0, 'paired-session security does not resume Codex for outsider chats' );
+    is( scalar @post_calls, 0, 'paired-session security does not reply to outsider chats' );
 }
 
 {
