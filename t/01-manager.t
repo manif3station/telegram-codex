@@ -264,7 +264,9 @@ sub new_manager {
     my $manager = new_manager;
     ok( !defined $manager->listener_slash_command_name( { text => 'hello there' } ), 'listener_slash_command_name returns undef for ordinary non-slash Telegram text' );
     is( $manager->listener_slash_command_name( { text => '/status' } ), 'status', 'listener_slash_command_name parses a simple Telegram slash command' );
+    is( $manager->listener_slash_command_name( { text => " \n/status \n" } ), 'status', 'listener_slash_command_name trims surrounding whitespace and newline noise before parsing a Telegram slash command' );
     is( $manager->listener_slash_command_name( { text => '/status@jamesthexe_bot extra words' } ), 'status', 'listener_slash_command_name strips the Telegram bot suffix and trailing arguments' );
+    is( $manager->listener_slash_command_name( { text => "\t/help\t" } ), 'help', 'listener_slash_command_name still recognizes another supported slash command after surrounding whitespace normalization' );
     is( $manager->listener_help_reply, "Supported Telegram slash commands:\n/help\n/status", 'listener_help_reply lists the supported Telegram slash commands' );
     ok( !defined $manager->listener_slash_command_reply( { text => 'hello there' } ), 'listener_slash_command_reply returns undef for ordinary non-slash Telegram text' );
     is( $manager->listener_slash_command_reply( { text => '/help' } ), "Supported Telegram slash commands:\n/help\n/status", 'listener_slash_command_reply returns the help text for /help' );

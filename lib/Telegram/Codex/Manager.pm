@@ -1846,6 +1846,8 @@ sub listener_reply_mode_for_update {
 sub listener_slash_command_name {
     my ( $self, $summary ) = @_;
     my $text = defined $summary->{text} ? $summary->{text} : q{};
+    $text =~ s/\A\s+//;
+    $text =~ s/\s+\z//;
     return undef if $text !~ m{\A/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s+.*)?\z};
     return lc $1;
 }

@@ -253,8 +253,16 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
   - paired Telegram `/status` requests are now answered directly by `telegram-codex` instead of resuming Codex as ordinary prompt text
   - when a live tmux-backed Codex pane exists for that session, Telegram `/status` now captures and returns the real rendered Codex status panel from that pane
   - when no live tmux-backed Codex pane exists for that session, Telegram `/status` now returns an explicit unavailable message instead of a synthetic local runtime summary
+  - surrounding whitespace or newline noise is stripped before Telegram slash parsing so padded `/status` and `/help` messages still stay on the direct slash-command path
   - Telegram slash-command parsing accepts the normal `@botname` suffix form
   - unsupported Telegram slash commands are rejected explicitly instead of being forwarded into managed Codex reply generation
+- Docker functional gate for `DD-312`:
+  - `Files=6, Tests=683`
+  - `Result: PASS`
+- Docker covered gate for `DD-312`:
+  - `Files=6, Tests=683`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
 - Live `/status` pane-discovery regressions:
   - cached live-pane ids are reused when they are still valid
   - stale cached live-pane ids are dropped instead of blocking fresher live tmux matches
