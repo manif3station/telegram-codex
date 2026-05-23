@@ -15,6 +15,19 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-311`:
+  - `Files=6, Tests=681`
+  - `Result: PASS`
+- Docker covered gate for `DD-311`:
+  - `Files=6, Tests=681`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Telegram slash-command `/status` regressions:
+  - paired Telegram `/status` requests are answered directly by `telegram-codex` instead of being forwarded into Codex as ordinary prompt text
+  - when the mapped tmux-backed Codex pane is already showing the real status panel, Telegram now returns that visible live panel immediately instead of reinjecting `/status` and timing out on an unchanged block
+  - when a live pane needs a fresh `/status`, Telegram injects the real slash command into that pane and returns the rendered Codex panel
+  - when no live tmux-backed pane exists for that session, Telegram returns the explicit unavailable message instead of a synthetic local summary
+  - the real `tmux capture-pane` shell-out branch is covered in Docker through a fake `tmux` binary on `PATH`
 - Docker functional gate for `DD-308`:
   - `Files=6, Tests=603`
   - `Result: PASS`

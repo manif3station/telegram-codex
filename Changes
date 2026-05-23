@@ -1,3 +1,10 @@
+0.45 2026-05-23
+    - fixed Telegram `/status` live-pane parity so a pane that is already
+      showing the real Codex status panel is returned immediately instead
+      of timing out waiting for the panel to change
+    - added a Docker-safe fake-`tmux` regression that covers the real
+      `tmux capture-pane` shell-out path used by live `/status`
+
 0.44 2026-05-23
     - changed Telegram `/status` to mirror the real live Codex TUI status
       panel from a tmux-backed shared session when one is attached
