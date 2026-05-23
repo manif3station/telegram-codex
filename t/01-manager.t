@@ -72,6 +72,7 @@ sub new_manager {
         process_list_runner  => $args{process_list_runner},
         tmux_panes_runner    => $args{tmux_panes_runner},
         tmux_send_runner     => $args{tmux_send_runner},
+        tmux_capture_runner  => $args{tmux_capture_runner},
     );
 }
 
@@ -257,6 +258,511 @@ sub new_manager {
     is( scalar @{ $result->{replied} }, 1, 'auto-reply-start replies once for /start' );
     is( $post_calls[0][0], 'sendMessage', 'auto-reply-start sends a message reply' );
     is( $get_calls[-1][1]{offset}, 12, 'auto-reply-start acknowledges updates with next offset' );
+}
+
+{
+    my $manager = new_manager;
+    ok( !defined $manager->listener_slash_command_name( { text => 'hello there' } ), 'listener_slash_command_name returns undef for ordinary non-slash Telegram text' );
+    is( $manager->listener_slash_command_name( { text => '/status' } ), 'status', 'listener_slash_command_name parses a simple Telegram slash command' );
+    is( $manager->listener_slash_command_name( { text => '/status@jamesthexe_bot extra words' } ), 'status', 'listener_slash_command_name strips the Telegram bot suffix and trailing arguments' );
+    is( $manager->listener_help_reply, "Supported Telegram slash commands:\n/help\n/status", 'listener_help_reply lists the supported Telegram slash commands' );
+    ok( !defined $manager->listener_slash_command_reply( { text => 'hello there' } ), 'listener_slash_command_reply returns undef for ordinary non-slash Telegram text' );
+    is( $manager->listener_slash_command_reply( { text => '/help' } ), "Supported Telegram slash commands:\n/help\n/status", 'listener_slash_command_reply returns the help text for /help' );
+    is( $manager->listener_slash_command_reply( { text => '/unknown' } ), "Unsupported Telegram slash command: /unknown\nSupported commands:\n/help\n/status", 'listener_slash_command_reply rejects unsupported Telegram slash commands explicitly' );
+    my $status = $manager->listener_status_reply( $manager->listener_paths_for_session('skills') );
+    like( $status, qr/\ACodex \/status unavailable\.\n/, 'listener_status_reply reports an explicit unavailable message when no live Codex pane exists' );
+    like( $status, qr/No live tmux-backed Codex TUI pane is attached/, 'listener_status_reply explains that live tmux-backed Codex is required for /status parity' );
+}
+
+{
+    my @sent;
+    my @captures = (
+        join(
+            "\n",
+            '╭─────────────────────────────────────────────────────────────────────────────────────────╮',
+            '│  Model:                       gpt-5.4 (reasoning medium, summaries auto)                │',
+            '│  Directory:                   ~/projects/developer-dashboard                            │',
+            '│  Permissions:                 Full Access                                               │',
+            '│  Agents.md:                   AGENTS.override.md                                        │',
+            '│  Account:                     cereals.bedpost.0r@icloud.com (Pro)                       │',
+            '│  Collaboration mode:          Default                                                   │',
+            '│  Session:                     session-status-visible                                    │',
+            '│                                                                                         │',
+            '│  Context window:              27% left (193K used / 258K)                               │',
+            '│  5h limit:                    [███████████████████░] 94% left (resets 10:23)            │',
+            '│  Weekly limit:                [██████░░░░░░░░░░░░░░] 30% left (resets 19:40 on 26 May)  │',
+            '╰─────────────────────────────────────────────────────────────────────────────────────────╯',
+        ) . "\n",
+    );
+    my $manager = new_manager(
+        env => {
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-status-visible',
+        },
+        process_list_runner => sub {
+            return [
+                {
+                    pid    => 71,
+                    tty    => 'pts/17',
+                    etimes => 4,
+                    cmd    => 'codex resume session-status-visible',
+                },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                {
+                    pane_id         => '%17',
+                    tty             => '/dev/pts/17',
+                    current_command => 'node',
+                },
+            ];
+        },
+        tmux_send_runner => sub {
+            my ( $pane_id, $text ) = @_;
+            push @sent, [ $pane_id, $text ];
+            return 1;
+        },
+        tmux_capture_runner => sub {
+            my ($pane_id) = @_;
+            is( $pane_id, '%17', 'listener_status_reply checks the cached live pane capture first when it already resolves to a live Codex pane' );
+            return $captures[0];
+        },
+    );
+    my $status = $manager->listener_status_reply( $manager->listener_paths_for_session('skills') );
+    is_deeply( \@sent, [], 'listener_status_reply does not reinject /status when the live pane already shows the real Codex status panel' );
+    like( $status, qr/Session:\s+session-status-visible/, 'listener_status_reply returns the already-visible live Codex /status block without needing another slash-command injection' );
+}
+
+{
+    my @sent;
+    my @captures = (
+        "before prompt\n",
+        "before prompt\n",
+        join(
+            "\n",
+            '╭─────────────────────────────────────────────────────────────────────────────────────────╮',
+            '│  Model:                       gpt-5.4 (reasoning medium, summaries auto)                │',
+            '│  Directory:                   ~/projects/developer-dashboard                            │',
+            '│  Permissions:                 Full Access                                               │',
+            '│  Agents.md:                   AGENTS.override.md                                        │',
+            '│  Account:                     cereals.bedpost.0r@icloud.com (Pro)                       │',
+            '│  Collaboration mode:          Default                                                   │',
+            '│  Session:                     session-status-77                                         │',
+            '│                                                                                         │',
+            '│  Context window:              27% left (193K used / 258K)                               │',
+            '│  5h limit:                    [███████████████████░] 94% left (resets 10:23)            │',
+            '│  Weekly limit:                [██████░░░░░░░░░░░░░░] 30% left (resets 19:40 on 26 May)  │',
+            '╰─────────────────────────────────────────────────────────────────────────────────────────╯',
+        ) . "\n",
+    );
+    my $manager = new_manager(
+        env => {
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-status-77',
+        },
+        process_list_runner => sub {
+            return [
+                {
+                    pid    => 77,
+                    tty    => 'pts/7',
+                    etimes => 4,
+                    cmd    => 'codex resume session-status-77',
+                },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                {
+                    pane_id         => '%7',
+                    tty             => '/dev/pts/7',
+                    current_command => 'node',
+                },
+            ];
+        },
+        tmux_send_runner => sub {
+            my ( $pane_id, $text ) = @_;
+            push @sent, [ $pane_id, $text ];
+            return 1;
+        },
+        tmux_capture_runner => sub {
+            my ($pane_id) = @_;
+            is( $pane_id, '%7', 'live /status capture targets the resolved tmux pane' );
+            return shift @captures;
+        },
+        sleep_runner => sub { return 0.1; },
+    );
+    my $status = $manager->listener_status_reply( $manager->listener_paths_for_session('skills') );
+    is_deeply( \@sent, [ [ '%7', '/status' ] ], 'listener_status_reply injects /status into the live Codex tmux pane when the session is attached' );
+    like( $status, qr/Model:\s+gpt-5\.4/, 'listener_status_reply returns the live Codex /status model line when a live tmux pane is available' );
+    like( $status, qr/Session:\s+session-status-77/, 'listener_status_reply returns the live Codex /status session line when a live tmux pane is available' );
+    like( $status, qr/Weekly limit:\s+\[██████/, 'listener_status_reply returns the live Codex /status limits block when a live tmux pane is available' );
+}
+
+{
+    my @sent;
+    my %captures = (
+        '%2' => [
+            "before status\n",
+            "before status\n",
+            join(
+                "\n",
+                'after status',
+                '╭─────────────────────────────────────────────────────────────────────────────────────────╮',
+                '│  Model:                       gpt-5.4 (reasoning medium, summaries auto)                │',
+                '│  Directory:                   ~/projects/skills                                         │',
+                '│  Session:                     session-status-99                                         │',
+                '╰─────────────────────────────────────────────────────────────────────────────────────────╯',
+            ) . "\n",
+        ],
+    );
+    my $manager = new_manager(
+        env => {
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-status-99',
+        },
+        process_list_runner => sub {
+            return [
+                { pid => 92, tty => 'pts/2', etimes => 1, cmd => 'codex resume session-status-99' },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                { pane_id => '%2', tty => '/dev/pts/2', current_command => 'node' },
+            ];
+        },
+        tmux_send_runner => sub {
+            my ( $pane_id, $text ) = @_;
+            push @sent, [ $pane_id, $text ];
+            return 1;
+        },
+        tmux_capture_runner => sub {
+            my ($pane_id) = @_;
+            my $queue = $captures{$pane_id} || [];
+            return @$queue > 1 ? shift @{$captures{$pane_id}} : $queue->[0];
+        },
+        sleep_runner => sub { return 0.1; },
+    );
+    my $status = $manager->listener_status_reply( $manager->listener_paths_for_session('skills') );
+    is_deeply( \@sent, [ [ '%2', '/status' ] ], 'listener_status_reply injects /status into the matching live Codex tmux pane for the target session' );
+    like( $status, qr/Session:\s+session-status-99/, 'listener_status_reply returns the live status block when a live tmux pane matches the target session' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $paths;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_RUNTIME_DIR     => $runtime,
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-status-cache',
+            CODEX_SESSION_ID               => 'skills',
+        },
+        process_list_runner => sub {
+            return [
+                { pid => 41, tty => 'pts/41', etimes => 8, cmd => 'codex resume session-status-cache' },
+                { pid => 42, tty => 'pts/42', etimes => 2, cmd => 'codex resume session-status-cache' },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                { pane_id => '%41', tty => '/dev/pts/41', current_command => 'node' },
+                { pane_id => '%42', tty => '/dev/pts/42', current_command => 'node' },
+                { pane_id => '%99', tty => '/dev/pts/99', current_command => 'bash' },
+            ];
+        },
+    );
+    $paths = $manager->listener_paths_for_session('skills');
+    is_deeply(
+        [ $manager->resolve_codex_live_tmux_panes('session-status-cache') ],
+        [ '%42', '%41' ],
+        'resolve_codex_live_tmux_panes returns matching live pane ids in freshest-first order',
+    );
+    ok( $manager->tmux_pane_id_exists('%42'), 'tmux_pane_id_exists accepts a live pane id from the current pane list' );
+    ok( !$manager->tmux_pane_id_exists('%404'), 'tmux_pane_id_exists rejects an unknown pane id' );
+    is( $manager->read_listener_live_pane_id($paths), undef, 'read_listener_live_pane_id returns undef when no cached pane file exists' );
+    is( $manager->write_listener_live_pane_id( $paths, '%41' ), $paths->{live_pane_file}, 'write_listener_live_pane_id stores the cached live pane id' );
+    is( $manager->read_listener_live_pane_id($paths), '%41', 'read_listener_live_pane_id reloads the cached live pane id from runtime state' );
+    is_deeply(
+        [ $manager->listener_status_live_pane_candidates( 'session-status-cache', $paths ) ],
+        [ '%41', '%42' ],
+        'listener_status_live_pane_candidates prefers the cached pane id and then appends live matches without duplicates',
+    );
+    is( $manager->write_listener_live_pane_id( $paths, undef ), 1, 'write_listener_live_pane_id is a no-op success when no pane id is supplied' );
+}
+
+{
+    my $manager = new_manager(
+        env => {
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-status-88',
+        },
+        process_list_runner => sub {
+            return [
+                {
+                    pid    => 88,
+                    tty    => 'pts/8',
+                    etimes => 5,
+                    cmd    => 'codex resume session-status-88',
+                },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                {
+                    pane_id         => '%8',
+                    tty             => '/dev/pts/8',
+                    current_command => 'node',
+                },
+            ];
+        },
+        tmux_send_runner    => sub { return 1; },
+        tmux_capture_runner => sub { return "no status here\n"; },
+        sleep_runner        => sub { return 0.1; },
+    );
+    my $status = $manager->listener_status_reply( $manager->listener_paths_for_session('skills') );
+    like( $status, qr/\ACodex \/status unavailable\.\n/, 'listener_status_reply reports explicit unavailability when live /status capture fails for the resolved pane' );
+    like( $status, qr/session-status-88/, 'listener_status_reply names the target Codex session when live /status capture fails' );
+}
+
+{
+    my $manager = new_manager;
+    is( $manager->extract_codex_status_block(undef), undef, 'extract_codex_status_block returns undef for an undefined pane capture' );
+    is( $manager->extract_codex_status_block("ordinary output\nwithout a status block\n"), undef, 'extract_codex_status_block returns undef when no Codex status block is present' );
+    is( $manager->codex_status_block_line(undef), 0, 'codex_status_block_line rejects undefined lines' );
+    is( $manager->codex_status_block_line(q{}), 1, 'codex_status_block_line keeps blank status spacing lines' );
+    is( $manager->codex_status_block_line('Model: gpt-5.4'), 1, 'codex_status_block_line keeps known Codex status label lines' );
+    is( $manager->codex_status_block_line('╰────'), 1, 'codex_status_block_line keeps non-alphanumeric box lines' );
+    is( $manager->codex_status_block_line('prompt> hi there'), 0, 'codex_status_block_line rejects ordinary prompt content' );
+    like(
+        scalar $manager->extract_codex_status_block(
+            "\n" . join(
+                "\n",
+                q{},
+                '│  Model: gpt-5.4 │',
+                '│  Session: abc-123 │',
+                '╰────────╯',
+                q{},
+            ) . "\n",
+        ),
+        qr/\AModel:|^│  Model:/m,
+        'extract_codex_status_block can recover a compact Codex status block from pane capture text',
+    );
+}
+
+{
+    my $manager = new_manager;
+    like( scalar( eval { $manager->codex_live_status_snapshot( undef, '%9' ); 1 } ? q{} : $@ ), qr/Missing Codex session id/, 'codex_live_status_snapshot fails explicitly when the session id is missing' );
+    like( scalar( eval { $manager->codex_live_status_snapshot( 'session-1', undef ); 1 } ? q{} : $@ ), qr/Missing tmux pane id/, 'codex_live_status_snapshot fails explicitly when the tmux pane id is missing' );
+    like( scalar( eval { $manager->codex_live_status_reply( undef, '%9' ); 1 } ? q{} : $@ ), qr/Missing Codex session id/, 'codex_live_status_reply fails explicitly when the session id is missing' );
+    like( scalar( eval { $manager->codex_live_status_reply( 'session-1', undef ); 1 } ? q{} : $@ ), qr/Missing tmux pane id/, 'codex_live_status_reply fails explicitly when the tmux pane id is missing' );
+    like( scalar( eval { $manager->tmux_capture_pane_text(undef); 1 } ? q{} : $@ ), qr/Missing tmux pane id/, 'tmux_capture_pane_text fails explicitly when the tmux pane id is missing' );
+    like( scalar( eval { $manager->tmux_send_text_to_pane( undef, '/status' ); 1 } ? q{} : $@ ), qr/Missing tmux pane id/, 'tmux_send_text_to_pane fails explicitly when the tmux pane id is missing' );
+}
+
+{
+    my $manager = new_manager(
+        tmux_capture_runner => sub { return "ordinary prompt\n"; },
+    );
+    is( $manager->codex_live_status_snapshot( 'session-snap-none', '%41' ), undef, 'codex_live_status_snapshot returns undef when the live pane does not currently contain a Codex status block' );
+}
+
+{
+    my $manager = new_manager(
+        tmux_capture_runner => sub {
+            return join(
+                "\n",
+                '╭─────────────────────────────────────────────────────────────────────────────────────────╮',
+                '│  Model:                       gpt-5.4 (reasoning medium, summaries auto)                │',
+                '│  Session:                     session-snap-other                                         │',
+                '╰─────────────────────────────────────────────────────────────────────────────────────────╯',
+            ) . "\n";
+        },
+    );
+    is( $manager->codex_live_status_snapshot( 'session-snap-target', '%42' ), undef, 'codex_live_status_snapshot returns undef when the visible status block belongs to a different Codex session' );
+}
+
+{
+    my $manager = new_manager(
+        tmux_capture_runner => sub {
+            return join(
+                "\n",
+                '╭─────────────────────────────────────────────────────────────────────────────────────────╮',
+                '│  Model:                       gpt-5.4 (reasoning medium, summaries auto)                │',
+                '│  Session:                     some-other-session                                         │',
+                '╰─────────────────────────────────────────────────────────────────────────────────────────╯',
+            ) . "\n";
+        },
+    );
+    is(
+        $manager->codex_live_status_snapshot( 'session-1', '%9' ),
+        undef,
+        'codex_live_status_snapshot rejects a captured status block when it belongs to a different Codex session',
+    );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $bin_dir = File::Spec->catdir( $runtime, 'bin' );
+    make_path($bin_dir);
+    my $tmux = File::Spec->catfile( $bin_dir, 'tmux' );
+    _write(
+        $tmux,
+        <<'SH'
+#!/bin/sh
+if [ "$1" = "capture-pane" ] && [ "$2" = "-p" ] && [ "$3" = "-t" ] && [ "$4" = "%55" ]; then
+  printf 'fake tmux status block\n'
+  exit 0
+fi
+exit 1
+SH
+    );
+    chmod 0755, $tmux or die "Unable to chmod fake tmux: $!";
+    local $ENV{PATH} = $bin_dir;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            PATH => $bin_dir,
+        },
+    );
+    is( $manager->tmux_capture_pane_text('%55'), "fake tmux status block\n", 'tmux_capture_pane_text can use the real shell-out capture path when a tmux binary is present on PATH' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $paths = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => { CODEX_SESSION_ID => 'skills' },
+    )->listener_paths;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-status-cache',
+            CODEX_SESSION_ID                 => 'skills',
+        },
+        process_list_runner => sub {
+            return [
+                {
+                    pid    => 9,
+                    tty    => 'pts/9',
+                    etimes => 1,
+                    cmd    => 'codex resume session-status-cache',
+                },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                {
+                    pane_id         => '%9',
+                    tty             => '/dev/pts/9',
+                    current_command => 'node',
+                },
+            ];
+        },
+    );
+    make_path( $paths->{runtime_dir} );
+    _write( $paths->{live_pane_file}, "%9\n" );
+    is_deeply(
+        [ $manager->listener_status_live_pane_candidates( 'session-status-cache', $paths ) ],
+        ['%9'],
+        'listener_status_live_pane_candidates reuses the cached live pane id when it still exists',
+    );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $paths = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => { CODEX_SESSION_ID => 'skills' },
+    )->listener_paths;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-status-cache',
+            CODEX_SESSION_ID                 => 'skills',
+        },
+        process_list_runner => sub {
+            return [
+                {
+                    pid    => 9,
+                    tty    => 'pts/9',
+                    etimes => 1,
+                    cmd    => 'codex resume session-status-cache',
+                },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                {
+                    pane_id         => '%9',
+                    tty             => '/dev/pts/9',
+                    current_command => 'node',
+                },
+            ];
+        },
+    );
+    make_path( $paths->{runtime_dir} );
+    _write( $paths->{live_pane_file}, "%404\n" );
+    is_deeply(
+        [ $manager->listener_status_live_pane_candidates( 'session-status-cache', $paths ) ],
+        ['%9'],
+        'listener_status_live_pane_candidates drops a cached pane id when that pane no longer exists',
+    );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_CODEX_TARGET_SESSION_ID => 'session-status-multi',
+            CODEX_SESSION_ID                 => 'skills',
+        },
+        process_list_runner => sub {
+            return [
+                {
+                    pid    => 99,
+                    tty    => 'pts/9',
+                    etimes => 1,
+                    cmd    => 'codex resume session-status-multi',
+                },
+                {
+                    pid    => 98,
+                    tty    => 'pts/9',
+                    etimes => 2,
+                    cmd    => 'codex resume session-status-multi',
+                },
+                {
+                    pid    => 97,
+                    tty    => 'pts/10',
+                    etimes => 3,
+                    cmd    => 'codex resume session-status-multi',
+                },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                {
+                    pane_id         => '%9',
+                    tty             => '/dev/pts/9',
+                    current_command => 'node',
+                },
+                {
+                    pane_id         => '%10',
+                    tty             => '/dev/pts/10',
+                    current_command => 'node',
+                },
+            ];
+        },
+    );
+    is_deeply(
+        [ $manager->resolve_codex_live_tmux_panes('session-status-multi') ],
+        [ '%9', '%10' ],
+        'resolve_codex_live_tmux_panes returns unique live tmux pane candidates for the target Codex session',
+    );
 }
 
 {
@@ -1663,6 +2169,108 @@ sub new_manager {
     is( $state->{pairing_code}, ( split / /, $post_calls[0][1]{text} )[-1], 'pairing gate persists the same challenge code it returned to Telegram' );
     like( $audit, qr/"type"\s*:\s*"pairing\.challenge\.sent"/, 'pairing gate records the challenge send decision in the session audit' );
     is( $manager->read_text_file($transcript_file), q{}, 'pairing gate does not append the unpaired trigger message into the shared Codex transcript' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $runtime_dir = File::Spec->catdir( $runtime, 'skills' );
+    make_path($runtime_dir);
+    my @post_calls;
+    my @resume_calls;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'skills',
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 12,
+                        message   => {
+                            message_id => 8,
+                            text       => '/status@jamesthexe_bot',
+                            chat       => { id => 88, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            push @post_calls, [ $method, $params ];
+            return {
+                ok     => JSON::XS::true,
+                result => { message_id => 500, chat => { id => $params->{chat_id} }, text => $params->{text} },
+            };
+        },
+        codex_resume_runner => sub {
+            push @resume_calls, [@_];
+            return 'unexpected';
+        },
+        process_list_runner => sub { return [] },
+        tmux_panes_runner   => sub { return [] },
+    );
+    _write( File::Spec->catfile( $runtime_dir, 'pairing.json' ), encode_json( { paired_chat_id => 88 } ) );
+    _write( File::Spec->catfile( $runtime_dir, 'codex.session' ), "session-status-77\n" );
+    my $result = $manager->execute_check_messages( 'skills', 1, 0 );
+    is( $result->{processed}, 1, 'execute_check_messages processes a paired Telegram /status slash command' );
+    is( $result->{replied}, 1, 'execute_check_messages replies to a paired Telegram /status slash command' );
+    is( scalar @resume_calls, 0, 'execute_check_messages does not resume Codex for a handled Telegram slash command' );
+    is( $post_calls[0][0], 'sendMessage', 'execute_check_messages sends a plain Telegram reply for /status' );
+    like( $post_calls[0][1]{text}, qr/\ACodex \/status unavailable\.\n/, 'execute_check_messages now returns an explicit unavailable message when no live Codex pane exists for /status' );
+    like( $post_calls[0][1]{text}, qr/session-status-77/, 'execute_check_messages names the mapped Codex session in the unavailable /status reply' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
+    my $runtime_dir = File::Spec->catdir( $runtime, 'skills' );
+    make_path($runtime_dir);
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'skills',
+        },
+        get_runner => sub {
+            return {
+                ok     => JSON::XS::true,
+                result => [
+                    {
+                        update_id => 13,
+                        message   => {
+                            message_id => 9,
+                            text       => '/status',
+                            chat       => { id => 88, type => 'private' },
+                        },
+                    },
+                ],
+            };
+        },
+        post_runner => sub {
+            my ( $method, $params ) = @_;
+            die "Telegram POST failed for sendMessage: 500 slash command rejected\n"
+              if $method eq 'sendMessage';
+            return { ok => JSON::XS::true, result => { message_id => 501, chat => { id => $params->{chat_id} } } };
+        },
+    );
+    _write( File::Spec->catfile( $runtime_dir, 'pairing.json' ), encode_json( { paired_chat_id => 88 } ) );
+    _write( File::Spec->catfile( $runtime_dir, 'codex.session' ), "session-status-88\n" );
+    my $paths = $manager->listener_paths_for_session('skills');
+    $manager->set_listener_audit_enabled( 'skills', 1 );
+    my $result = $manager->execute_check_messages( 'skills', 1, 0 );
+    my $audit = $manager->read_text_file( $paths->{audit_file} );
+    is( $result->{processed}, 1, 'execute_check_messages still processes a slash command when the Telegram reply send fails' );
+    is( $result->{replied}, 0, 'execute_check_messages does not count a failed slash-command reply as sent' );
+    is( scalar @{ $result->{reply_errors} }, 1, 'execute_check_messages records one reply error for the failed Telegram slash-command send' );
+    like( $result->{reply_errors}[0]{error}, qr/slash command rejected/, 'execute_check_messages exposes the Telegram slash-command reply failure detail' );
+    like( $audit, qr/"type"\s*:\s*"slash_command\.reply_failed"/, 'execute_check_messages audits a failed Telegram slash-command reply send' );
 }
 
 {

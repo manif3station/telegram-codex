@@ -1,3 +1,19 @@
+0.44 2026-05-23
+    - changed Telegram `/status` to mirror the real live Codex TUI status
+      panel from a tmux-backed shared session when one is attached
+    - changed detached `/status` handling to return an explicit unavailable
+      message instead of a synthetic local runtime summary when no live
+      shared Codex pane exists for that session
+
+0.43 2026-05-23
+    - added Telegram-native slash command handling for managed sessions so
+      supported commands such as `/status` are answered directly by
+      `telegram-codex` instead of being forwarded into Codex as ordinary
+      prompt text
+    - added direct handling for `/help` plus explicit rejection for
+      unsupported Telegram slash commands, including parsing of the normal
+      `@botname` suffix form
+
 0.42 2026-05-23
     - kept Telegram `typing...` active for TUI-originated mirrored Codex
       turns by starting the same managed typing guard on shared-transcript

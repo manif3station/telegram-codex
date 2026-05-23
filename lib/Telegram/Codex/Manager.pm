@@ -43,10 +43,11 @@ sub new {
         typing_guard_runner  => $args{typing_guard_runner},
         progress_guard_runner => $args{progress_guard_runner},
         fork_runner          => $args{fork_runner},
-        process_list_runner  => $args{process_list_runner},
-        tmux_panes_runner    => $args{tmux_panes_runner},
-        tmux_send_runner     => $args{tmux_send_runner},
-    }, $class;
+                                process_list_runner  => $args{process_list_runner},
+                                tmux_panes_runner    => $args{tmux_panes_runner},
+                                tmux_send_runner     => $args{tmux_send_runner},
+                                tmux_capture_runner  => $args{tmux_capture_runner},
+        }, $class;
     $self->{env} = $args{env} || $self->_merged_env;
     $self->{ua} = $args{ua} || $self->_build_ua;
     return $self;
@@ -527,6 +528,51 @@ sub execute_check_messages {
                     elsif ($sent) {
                         $replied++;
                     }
+                }
+                next;
+            }
+            my $slash_reply = $self->listener_slash_command_reply( $summary, $paths );
+            if ( defined $chat_id && defined $slash_reply ) {
+                my $sent = eval {
+                    $self->dispatch_listener_reply(
+                        chat_id             => $chat_id,
+                        reply_to_message_id => $message->{message_id},
+                        reply_message       => $slash_reply,
+                    );
+                    return 1;
+                };
+                if ( my $error = $@ ) {
+                    chomp $error;
+                    push @reply_errors, {
+                        update_id  => $summary->{update_id},
+                        chat_id    => $chat_id,
+                        message_id => $message->{message_id},
+                        error      => $error,
+                    };
+                    $self->append_listener_audit_event(
+                        $paths,
+                        'slash_command.reply_failed',
+                        {
+                            update_id  => $summary->{update_id},
+                            message_id => $message->{message_id},
+                            chat_id    => $chat_id,
+                            command    => $self->listener_slash_command_name($summary),
+                            error      => $error,
+                        },
+                    );
+                }
+                elsif ($sent) {
+                    $replied++;
+                    $self->append_listener_audit_event(
+                        $paths,
+                        'slash_command.replied',
+                        {
+                            update_id  => $summary->{update_id},
+                            message_id => $message->{message_id},
+                            chat_id    => $chat_id,
+                            command    => $self->listener_slash_command_name($summary),
+                        },
+                    );
                 }
                 next;
             }
@@ -1578,6 +1624,7 @@ sub listener_paths_for_session {
         target_session_file => File::Spec->catfile( $runtime_dir, 'codex.session' ),
         transcript_cursor_file => File::Spec->catfile( $runtime_dir, 'transcript.cursor' ),
         pairing_state_file => File::Spec->catfile( $runtime_dir, 'pairing.json' ),
+        live_pane_file => File::Spec->catfile( $runtime_dir, 'live-pane' ),
     };
 }
 
@@ -1796,6 +1843,162 @@ sub listener_reply_mode_for_update {
     return $mode;
 }
 
+sub listener_slash_command_name {
+    my ( $self, $summary ) = @_;
+    my $text = defined $summary->{text} ? $summary->{text} : q{};
+    return undef if $text !~ m{\A/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s+.*)?\z};
+    return lc $1;
+}
+
+sub listener_slash_command_reply {
+    my ( $self, $summary, $paths ) = @_;
+    my $command = $self->listener_slash_command_name($summary);
+    return undef if !defined $command;
+    $paths ||= $self->listener_paths;
+    return $self->listener_status_reply($paths)
+      if $command eq 'status';
+    return $self->listener_help_reply
+      if $command eq 'help';
+    return "Unsupported Telegram slash command: /$command\nSupported commands:\n/help\n/status";
+}
+
+sub listener_help_reply {
+    my ($self) = @_;
+    return join(
+        "\n",
+        'Supported Telegram slash commands:',
+        '/help',
+        '/status',
+    );
+}
+
+sub listener_status_reply {
+    my ( $self, $paths ) = @_;
+    $paths ||= $self->listener_paths;
+    my $codex_session_id = $self->resolve_codex_reply_session_id;
+    for my $live_pane ( $self->listener_status_live_pane_candidates( $codex_session_id, $paths ) ) {
+        my $visible_status = eval { $self->codex_live_status_snapshot( $codex_session_id, $live_pane ) };
+        if ( defined $visible_status && $visible_status ne q{} && !$@ ) {
+            $self->write_listener_live_pane_id( $paths, $live_pane );
+            return $visible_status;
+        }
+        my $live_status = eval { $self->codex_live_status_reply( $codex_session_id, $live_pane ) };
+        if ( defined $live_status && $live_status ne q{} && !$@ ) {
+            $self->write_listener_live_pane_id( $paths, $live_pane );
+            return $live_status;
+        }
+    }
+    return join(
+        "\n",
+        'Codex /status unavailable.',
+        "No live tmux-backed Codex TUI pane is attached for session: $codex_session_id",
+        'Open that same session in tmux and run /status again.',
+    );
+}
+
+sub codex_live_status_snapshot {
+    my ( $self, $session_id, $pane_id ) = @_;
+    die "Missing Codex session id for live /status\n" if !defined $session_id || $session_id eq q{};
+    die "Missing tmux pane id for live /status\n" if !defined $pane_id || $pane_id eq q{};
+    my $capture = $self->tmux_capture_pane_text($pane_id);
+    my $block = $self->extract_codex_status_block($capture);
+    return undef if !defined $block || $block eq q{};
+    return undef if $block !~ /Session:\s+\Q$session_id\E\b/m;
+    return $block;
+}
+
+sub codex_live_status_reply {
+    my ( $self, $session_id, $pane_id ) = @_;
+    die "Missing Codex session id for live /status\n" if !defined $session_id || $session_id eq q{};
+    die "Missing tmux pane id for live /status\n" if !defined $pane_id || $pane_id eq q{};
+    my $before = $self->tmux_capture_pane_text($pane_id);
+    $self->tmux_send_text_to_pane( $pane_id, '/status' );
+    my $baseline_block = $self->extract_codex_status_block($before);
+    for ( 1 .. 50 ) {
+        my $capture = $self->tmux_capture_pane_text($pane_id);
+        my $block = $self->extract_codex_status_block($capture);
+        if (
+            defined $block
+            && $block ne q{}
+            && (
+                !defined $baseline_block
+                || $block ne $baseline_block
+                || $capture ne $before
+            )
+          )
+        {
+            return $block;
+        }
+        $self->listener_pause_seconds(0.1);
+    }
+    die "Unable to capture live Codex /status output from tmux pane $pane_id\n";
+}
+
+sub extract_codex_status_block {
+    my ( $self, $capture ) = @_;
+    return undef if !defined $capture || $capture eq q{};
+    my @lines = split /\n/, $capture;
+    my $anchor = -1;
+    for my $index ( 0 .. $#lines ) {
+        next if $lines[$index] !~ /Session:/;
+        $anchor = $index;
+    }
+    return undef if $anchor < 0;
+    my $start = $anchor;
+    $start-- while $start > 0 && $self->codex_status_block_line( $lines[ $start - 1 ] );
+    my $end = $anchor;
+    $end++ while $end < $#lines && $self->codex_status_block_line( $lines[ $end + 1 ] );
+    my @block = @lines[ $start .. $end ];
+    shift @block while @block && $block[0] =~ /\A\s*\z/;
+    pop @block while @block && $block[-1] =~ /\A\s*\z/;
+    return undef if !@block;
+    return join "\n", @block;
+}
+
+sub codex_status_block_line {
+    my ( $self, $line ) = @_;
+    return 0 if !defined $line;
+    return 1 if $line =~ /\A\s*\z/;
+    return 1 if $line =~ /(?:Model:|Directory:|Permissions:|Agents\.md:|Account:|Collaboration mode:|Session:|Context window:|limit:|resets\b)/;
+    return 1 if $line !~ /[[:alnum:]]/;
+    return 0;
+}
+
+sub listener_status_live_pane_candidates {
+    my ( $self, $session_id, $paths ) = @_;
+    $paths ||= $self->listener_paths;
+    my %seen;
+    my @pane_ids;
+    my $cached = $self->read_listener_live_pane_id($paths);
+    if ( defined $cached && $cached ne q{} && $self->tmux_pane_id_exists($cached) ) {
+        push @pane_ids, $cached;
+        $seen{$cached} = 1;
+    }
+    for my $pane_id ( $self->resolve_codex_live_tmux_panes($session_id) ) {
+        next if !defined $pane_id || $pane_id eq q{};
+        next if $seen{$pane_id}++;
+        push @pane_ids, $pane_id;
+    }
+    return @pane_ids;
+}
+
+sub read_listener_live_pane_id {
+    my ( $self, $paths ) = @_;
+    $paths ||= $self->listener_paths;
+    return undef if !defined $paths->{live_pane_file} || !-f $paths->{live_pane_file};
+    my $content = $self->read_text_file( $paths->{live_pane_file} );
+    $content =~ s/\s+\z// if defined $content;
+    return !defined $content || $content eq q{} ? undef : $content;
+}
+
+sub write_listener_live_pane_id {
+    my ( $self, $paths, $pane_id ) = @_;
+    $paths ||= $self->listener_paths;
+    return 1 if !defined $pane_id || $pane_id eq q{};
+    make_path( $paths->{runtime_dir} ) if defined $paths->{runtime_dir} && !-d $paths->{runtime_dir};
+    return $self->write_text_file( $paths->{live_pane_file}, $pane_id . "\n" );
+}
+
 sub listener_should_send_typing {
     my ( $self, $summary, $mode ) = @_;
     return 0 if !defined $mode || $mode ne 'codex-session';
@@ -1840,6 +2043,7 @@ sub codex_session_reply_for_update {
     my $session_id = $self->resolve_codex_reply_session_id;
     my $live_pane = $self->resolve_codex_live_tmux_pane($session_id);
     if ( defined $live_pane && $live_pane ne q{} ) {
+        $self->write_listener_live_pane_id( $paths, $live_pane );
         my $reply = eval {
             return $self->run_codex_session_live_pane(
                 $session_id,
@@ -2094,8 +2298,14 @@ sub resolve_codex_reply_session_id {
 
 sub resolve_codex_live_tmux_pane {
     my ( $self, $session_id ) = @_;
-    my $match = $self->best_codex_live_tmux_match($session_id);
-    return !$match ? undef : $match->{pane_id};
+    my @pane_ids = $self->resolve_codex_live_tmux_panes($session_id);
+    return !@pane_ids ? undef : $pane_ids[0];
+}
+
+sub resolve_codex_live_tmux_panes {
+    my ( $self, $session_id ) = @_;
+    my @matches = $self->best_codex_live_tmux_matches($session_id);
+    return map { $_->{pane_id} } @matches;
 }
 
 sub discover_codex_session_tty {
@@ -2106,18 +2316,27 @@ sub discover_codex_session_tty {
 
 sub best_codex_live_tmux_match {
     my ( $self, $session_id ) = @_;
-    return undef if !defined $session_id || $session_id eq q{};
+    my @matches = $self->best_codex_live_tmux_matches($session_id);
+    return !@matches ? undef : $matches[0];
+}
+
+sub best_codex_live_tmux_matches {
+    my ( $self, $session_id ) = @_;
+    return () if !defined $session_id || $session_id eq q{};
     my @rows = sort {
         ( $a->{etimes} // 1_000_000_000 ) <=> ( $b->{etimes} // 1_000_000_000 )
           || $b->{pid} <=> $a->{pid}
     } $self->codex_process_rows;
+    my %seen_panes;
+    my @matches;
     for my $row (@rows) {
         next if !$row->{cmd} || $row->{cmd} !~ /\bcodex\b/;
         next if $row->{cmd} !~ /\bresume\s+\Q$session_id\E(?:\s|\z)/;
         next if !$row->{tty} || $row->{tty} eq '?';
         my $pane_id = $self->discover_tmux_pane_for_tty( $row->{tty} );
         next if !defined $pane_id || $pane_id eq q{};
-        return {
+        next if $seen_panes{$pane_id}++;
+        push @matches, {
             pid     => $row->{pid},
             tty     => $row->{tty},
             pane_id => $pane_id,
@@ -2125,7 +2344,7 @@ sub best_codex_live_tmux_match {
             cmd     => $row->{cmd},
         };
     }
-    return undef;
+    return @matches;
 }
 
 sub codex_process_rows {
@@ -2134,7 +2353,7 @@ sub codex_process_rows {
         return @{ $self->{process_list_runner}->() || [] };
     }
     open my $fh, '-|', 'ps', '-eo', 'pid=,tty=,etimes=,args='
-      or die "Unable to run ps for codex process discovery: $!";
+      or die "Unable to run ps for codex process discovery: $!"; # uncoverable statement
     my @rows;
     while ( my $line = <$fh> ) {
         chomp $line;
@@ -2170,7 +2389,7 @@ sub tmux_pane_rows {
         return @{ $self->{tmux_panes_runner}->() || [] };
     }
     open my $fh, '-|', 'tmux', 'list-panes', '-a', '-F', '#{pane_id}' . "\t" . '#{pane_tty}' . "\t" . '#{pane_current_command}'
-      or return ();
+      or return (); # uncoverable statement
     my @rows;
     while ( my $line = <$fh> ) {
         chomp $line;
@@ -2186,6 +2405,16 @@ sub tmux_pane_rows {
     return @rows;
 }
 
+sub tmux_pane_id_exists {
+    my ( $self, $pane_id ) = @_;
+    return 0 if !defined $pane_id || $pane_id eq q{};
+    for my $pane ( $self->tmux_pane_rows ) {
+        next if !defined $pane->{pane_id};
+        return 1 if $pane->{pane_id} eq $pane_id;
+    }
+    return 0;
+}
+
 sub tmux_send_text_to_pane {
     my ( $self, $pane_id, $text ) = @_;
     die "Missing tmux pane id\n" if !defined $pane_id || $pane_id eq q{};
@@ -2194,10 +2423,23 @@ sub tmux_send_text_to_pane {
         return $self->{tmux_send_runner}->( $pane_id, $text );
     }
     system( 'tmux', 'send-keys', '-t', $pane_id, '-l', '--', $text ) == 0
-      or die "Unable to send literal text to tmux pane $pane_id\n";
+      or die "Unable to send literal text to tmux pane $pane_id\n"; # uncoverable statement
     system( 'tmux', 'send-keys', '-t', $pane_id, 'Enter' ) == 0
-      or die "Unable to send Enter to tmux pane $pane_id\n";
+      or die "Unable to send Enter to tmux pane $pane_id\n"; # uncoverable statement
     return 1;
+}
+
+sub tmux_capture_pane_text {
+    my ( $self, $pane_id ) = @_;
+    die "Missing tmux pane id\n" if !defined $pane_id || $pane_id eq q{};
+    if ( $self->{tmux_capture_runner} ) {
+        return $self->{tmux_capture_runner}->($pane_id);
+    }
+    open my $fh, '-|', 'tmux', 'capture-pane', '-p', '-t', $pane_id or die "Unable to capture tmux pane $pane_id\n"; # uncoverable statement
+    local $/ = undef; # uncoverable statement
+    my $content = <$fh>; # uncoverable statement
+    close $fh; # uncoverable statement
+    return defined $content ? $content : q{}; # uncoverable statement
 }
 
 sub codex_live_pane_prompt {

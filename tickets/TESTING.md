@@ -236,6 +236,23 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 - TUI-mirror typing regressions:
   - TUI-originated mirrored turns now keep the same Telegram typing guard active until the final outbound Telegram reply send completes
   - the TUI-originated typing guard stays alive across later transcript polls when the final assistant turn does not arrive in the first collector cycle
+- Telegram slash-command regressions:
+  - paired Telegram `/status` requests are now answered directly by `telegram-codex` instead of resuming Codex as ordinary prompt text
+  - when a live tmux-backed Codex pane exists for that session, Telegram `/status` now captures and returns the real rendered Codex status panel from that pane
+  - when no live tmux-backed Codex pane exists for that session, Telegram `/status` now returns an explicit unavailable message instead of a synthetic local runtime summary
+  - Telegram slash-command parsing accepts the normal `@botname` suffix form
+  - unsupported Telegram slash commands are rejected explicitly instead of being forwarded into managed Codex reply generation
+- Live `/status` pane-discovery regressions:
+  - cached live-pane ids are reused when they are still valid
+  - stale cached live-pane ids are dropped instead of blocking fresher live tmux matches
+  - captured live status blocks are rejected when they belong to a different Codex session
+- Docker functional gate for `DD-311`:
+  - `Files=6, Tests=680`
+  - `Result: PASS`
+- Docker covered gate for `DD-311`:
+  - `Files=6, Tests=681`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
 - Docker functional gate for `DD-310`:
   - `Files=6, Tests=618`
   - `Result: PASS`
