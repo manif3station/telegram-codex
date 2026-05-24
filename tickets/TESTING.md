@@ -15,6 +15,17 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-313`:
+  - `Files=6, Tests=690`
+  - `Result: PASS`
+- Docker covered gate for `DD-313`:
+  - `Files=6, Tests=690`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Resource/runtime regressions:
+  - collector-owned workers now prune stale orphaned duplicate `codex resume <session-id>` processes before polling begins
+  - stale-process selection only targets older orphan duplicates behind a fresher live tmux-backed session owner on the same tty
+  - pruning covers both TERM-success and TERM-then-KILL escalation paths, with audit rows recorded for each pruned pid
 - Docker functional gate for `DD-311`:
   - `Files=6, Tests=681`
   - `Result: PASS`

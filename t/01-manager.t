@@ -5108,7 +5108,7 @@ EOF
     my $ps = File::Spec->catfile( $bin_dir, 'ps' );
     _write(
         $ps,
-        "#!/bin/sh\nprintf '  11 ? 1 helper --noop\\n  22 pts/77 3 codex resume 019e-real-tty\\n'\n"
+        "#!/bin/sh\nprintf '  11 1 ? 1 helper --noop\\n  22 9 pts/77 3 codex resume 019e-real-tty\\n'\n"
     );
     chmod 0755, $ps or die "Unable to chmod fake ps helper: $!";
     local $ENV{PATH} = $bin_dir;
@@ -5176,12 +5176,14 @@ EOF
             return [
                 {
                     pid    => 100,
+                    ppid   => 1,
                     tty    => 'pts/34',
                     etimes => 30_000,
                     cmd    => 'codex resume 019e-prefer-newest',
                 },
                 {
                     pid    => 200,
+                    ppid   => 99,
                     tty    => 'pts/0',
                     etimes => 10,
                     cmd    => 'codex resume 019e-prefer-newest',
@@ -5197,6 +5199,224 @@ EOF
     );
     is( $manager->discover_codex_session_tty('019e-prefer-newest'), 'pts/0', 'discover_codex_session_tty prefers the freshest matching codex resume process' );
     is( $manager->resolve_codex_live_tmux_pane('019e-prefer-newest'), '%77', 'resolve_codex_live_tmux_pane maps the freshest matching codex resume process to its tmux pane' );
+}
+
+{
+    my $manager = new_manager(
+        process_list_runner => sub {
+            return [
+                {
+                    pid    => 200,
+                    ppid   => 99,
+                    tty    => 'pts/0',
+                    etimes => 10,
+                    cmd    => 'codex resume 019e-prune-stale',
+                },
+                {
+                    pid    => 150,
+                    ppid   => 1,
+                    tty    => 'pts/0',
+                    etimes => 60,
+                    cmd    => 'codex resume 019e-prune-stale',
+                },
+                {
+                    pid    => 140,
+                    ppid   => 1,
+                    tty    => 'pts/0',
+                    etimes => 120,
+                    cmd    => 'codex resume 019e-prune-stale',
+                },
+                {
+                    pid    => 300,
+                    ppid   => 77,
+                    tty    => 'pts/1',
+                    etimes => 20,
+                    cmd    => 'codex resume 019e-prune-stale',
+                },
+                {
+                    pid    => 250,
+                    ppid   => 1,
+                    tty    => 'pts/1',
+                    etimes => 80,
+                    cmd    => 'codex resume 019e-prune-stale',
+                },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                { pane_id => '%77', tty => '/dev/pts/0', current_command => 'node' },
+                { pane_id => '%88', tty => '/dev/pts/1', current_command => 'node' },
+            ];
+        },
+    );
+    is_deeply(
+        [ map { $_->{pid} } $manager->stale_codex_resume_process_rows('019e-prune-stale') ],
+        [ 150, 250, 140 ],
+        'stale_codex_resume_process_rows returns only older orphaned codex resume processes behind the freshest live pane owners',
+    );
+}
+
+{
+    my @signals;
+    my %running = (
+        150 => 1,
+        250 => 1,
+    );
+    my $home = tempdir( CLEANUP => 1 );
+    my $paths = {
+        runtime_dir => File::Spec->catdir( $home, 'runtime' ),
+        audit_file  => File::Spec->catfile( $home, 'runtime', 'audit.jsonl' ),
+    };
+    make_path( $paths->{runtime_dir} );
+    _write( File::Spec->catfile( $paths->{runtime_dir}, 'audit.enabled' ), "1\n" );
+    my $manager = new_manager(
+        home => $home,
+        env  => {
+            TELEGRAM_CODEX_AUDIT => 1,
+        },
+        process_list_runner => sub {
+            return [
+                {
+                    pid    => 200,
+                    ppid   => 99,
+                    tty    => 'pts/0',
+                    etimes => 10,
+                    cmd    => 'codex resume 019e-prune-live',
+                },
+                {
+                    pid    => 150,
+                    ppid   => 1,
+                    tty    => 'pts/0',
+                    etimes => 60,
+                    cmd    => 'codex resume 019e-prune-live',
+                },
+                {
+                    pid    => 300,
+                    ppid   => 77,
+                    tty    => 'pts/1',
+                    etimes => 20,
+                    cmd    => 'codex resume 019e-prune-live',
+                },
+                {
+                    pid    => 250,
+                    ppid   => 1,
+                    tty    => 'pts/1',
+                    etimes => 80,
+                    cmd    => 'codex resume 019e-prune-live',
+                },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                { pane_id => '%77', tty => '/dev/pts/0', current_command => 'node' },
+                { pane_id => '%88', tty => '/dev/pts/1', current_command => 'node' },
+            ];
+        },
+        pid_check_runner => sub {
+            my ($pid) = @_;
+            return $running{$pid} ? 1 : 0;
+        },
+        process_signal_runner => sub {
+            my ( $signal, $pid ) = @_;
+            push @signals, [ $signal, $pid ];
+            delete $running{$pid};
+            return 1;
+        },
+        sleep_runner => sub { return 1; },
+    );
+    is_deeply(
+        [ $manager->prune_stale_codex_resume_processes( '019e-prune-live', $paths ) ],
+        [ 150, 250 ],
+        'prune_stale_codex_resume_processes terminates stale orphaned codex resume processes and reports the pruned pids',
+    );
+    is_deeply(
+        \@signals,
+        [
+            [ 'TERM', 150 ],
+            [ 'TERM', 250 ],
+        ],
+        'prune_stale_codex_resume_processes tries TERM first for each stale codex resume process',
+    );
+    my $audit = do {
+        open my $fh, '<', $paths->{audit_file} or die $!;
+        local $/;
+        <$fh>;
+    };
+    like( $audit, qr/"pid":150.*"type":"codex\.resume\.pruned"|"type":"codex\.resume\.pruned".*"pid":150/s, 'prune_stale_codex_resume_processes records an audit event for the first pruned process' );
+    like( $audit, qr/"pid":250.*"type":"codex\.resume\.pruned"|"type":"codex\.resume\.pruned".*"pid":250/s, 'prune_stale_codex_resume_processes records an audit event for the second pruned process' );
+}
+
+{
+    my @signals;
+    my %running = ( 150 => 1 );
+    my $kill_seen = 0;
+    my $sleep_after_kill = 0;
+    my $home = tempdir( CLEANUP => 1 );
+    my $paths = {
+        runtime_dir => File::Spec->catdir( $home, 'runtime' ),
+        audit_file  => File::Spec->catfile( $home, 'runtime', 'audit.jsonl' ),
+    };
+    make_path( $paths->{runtime_dir} );
+    _write( File::Spec->catfile( $paths->{runtime_dir}, 'audit.enabled' ), "1\n" );
+    my $manager = new_manager(
+        home => $home,
+        env  => {
+            TELEGRAM_CODEX_AUDIT => 1,
+        },
+        process_list_runner => sub {
+            return [
+                {
+                    pid    => 200,
+                    ppid   => 99,
+                    tty    => 'pts/0',
+                    etimes => 10,
+                    cmd    => 'codex resume 019e-prune-kill',
+                },
+                {
+                    pid    => 150,
+                    ppid   => 1,
+                    tty    => 'pts/0',
+                    etimes => 60,
+                    cmd    => 'codex resume 019e-prune-kill',
+                },
+            ];
+        },
+        tmux_panes_runner => sub {
+            return [
+                { pane_id => '%77', tty => '/dev/pts/0', current_command => 'node' },
+            ];
+        },
+        pid_check_runner => sub {
+            my ($pid) = @_;
+            return $running{$pid} ? 1 : 0;
+        },
+        process_signal_runner => sub {
+            my ( $signal, $pid ) = @_;
+            push @signals, [ $signal, $pid ];
+            $kill_seen = 1 if $signal eq 'KILL';
+            return 1;
+        },
+        sleep_runner => sub {
+            if ($kill_seen) {
+                $sleep_after_kill++;
+                delete $running{150} if $sleep_after_kill >= 1;
+            }
+            return 1;
+        },
+    );
+    is_deeply(
+        [ $manager->prune_stale_codex_resume_processes( '019e-prune-kill', $paths ) ],
+        [ 150 ],
+        'prune_stale_codex_resume_processes escalates to KILL when TERM does not clear a stale codex resume process',
+    );
+    is_deeply(
+        \@signals,
+        [
+            [ 'TERM', 150 ],
+            [ 'KILL', 150 ],
+        ],
+        'prune_stale_codex_resume_processes escalates from TERM to KILL for a stubborn stale codex resume process',
+    );
 }
 
 {

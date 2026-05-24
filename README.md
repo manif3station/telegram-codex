@@ -44,7 +44,8 @@ When `dashboard telegram-codex.start` runs with `TELEGRAM_BOT_TOKEN` and `TELEGR
    - `rotation.lines` fixed to `100`
    - `mode` fixed to `singleton`
 8. recycles any already-running `check-message <session-id>` worker for that session so the new managed behavior replaces stale long-lived code immediately
-9. launches the real Codex binary with `--dangerously-bypass-approvals-and-sandbox`
+9. prunes stale orphaned duplicate `codex resume <session-id>` processes for the mapped reply session before polling starts, so long-lived sessions do not keep leaking old live-session workers on the same tty
+10. launches the real Codex binary with `--dangerously-bypass-approvals-and-sandbox`
 
 During a managed Telegram reply, `telegram-codex` now also hydrates the reply prompt from recent persisted rows in that same saved Codex session transcript and then journals the inbound Telegram turn plus the outbound reply back into the transcript. That keeps later Telegram follow-up work and later resumed TUI history attached to one shared persisted Codex session instead of leaving Telegram as an isolated side channel.
 
@@ -64,6 +65,7 @@ It now also replaces any stale already-running worker for that same session, so 
 The collector-owned polling loop is now the always-on path. The old standalone listener command is no longer the primary runtime model.
 When `codex.session` exists for that collector session, `dashboard telegram-codex.check-message <session-id>` automatically routes replies back through that saved Codex session.
 If `codex.session` is missing, the managed reply path falls back to the same saved-session mapping in `~/.developer-dashboard/config/codex.json` that `telegram-codex.start` uses.
+Before the polling loop settles in, the worker prunes stale orphaned duplicate `codex resume <session-id>` processes that are older than the freshest live tmux-backed owner on the same tty. That keeps long-running Telegram-managed sessions from accumulating unnecessary resident Codex processes and cuts the avoidable memory footprint of those workspaces.
 
 ## What The Skill Supports
 

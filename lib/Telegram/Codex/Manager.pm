@@ -399,6 +399,8 @@ sub execute_check_messages {
         running_pid => $guard->{running_pid},
         pid_file    => $paths->{pid_file},
     } if $guard->{already_running};
+    my $target_session_id = $self->resolve_codex_reply_session_id;
+    my @pruned_live_resume_pids = $self->prune_stale_codex_resume_processes( $target_session_id, $paths );
     my $offset = $self->read_listener_offset( $paths->{offset_file} );
     my $recovered_offset = $self->recover_listener_offset_from_inbox( $paths->{inbox_file} );
     if ( defined $recovered_offset ) {
@@ -440,11 +442,13 @@ sub execute_check_messages {
         $paths,
         'check-message.started',
         {
-            session_id    => $session_id,
-            max_cycles    => $max_cycles,
-            poll_timeout  => $poll_timeout,
-            reply_mode    => $self->listener_reply_mode_for_update($reply_text),
-            audit_enabled => $audit_enabled ? JSON::XS::true : JSON::XS::false,
+            session_id              => $session_id,
+            target_session_id       => $target_session_id,
+            max_cycles              => $max_cycles,
+            poll_timeout            => $poll_timeout,
+            reply_mode              => $self->listener_reply_mode_for_update($reply_text),
+            audit_enabled           => $audit_enabled ? JSON::XS::true : JSON::XS::false,
+            pruned_live_resume_pids => \@pruned_live_resume_pids,
         },
     );
 
@@ -715,20 +719,22 @@ sub execute_check_messages {
     }
 
     return {
-        mode         => 'check_message',
-        session_id   => $session_id,
-        cycles       => $cycles,
-        processed    => $processed,
-        replied      => $replied,
-        get_errors   => \@get_errors,
-        typing_errors => \@typing_errors,
+        mode            => 'check_message',
+        session_id      => $session_id,
+        target_session_id => $target_session_id,
+        cycles          => $cycles,
+        processed       => $processed,
+        replied         => $replied,
+        get_errors      => \@get_errors,
+        typing_errors   => \@typing_errors,
         progress_errors => \@progress_errors,
-        reply_errors => \@reply_errors,
-        next_offset  => $offset,
-        offset_file  => $paths->{offset_file},
-        inbox_file   => $paths->{inbox_file},
-        pid_file     => $paths->{pid_file},
-        audit_file   => $paths->{audit_file},
+        reply_errors    => \@reply_errors,
+        next_offset     => $offset,
+        offset_file     => $paths->{offset_file},
+        inbox_file      => $paths->{inbox_file},
+        pid_file        => $paths->{pid_file},
+        audit_file      => $paths->{audit_file},
+        pruned_live_resume_pids => \@pruned_live_resume_pids,
     };
 }
 
@@ -1154,6 +1160,73 @@ sub recycle_check_message_session {
     }
     unlink $pid_file if -f $pid_file && !$self->pid_is_running($pid);
     return 1;
+}
+
+sub stale_codex_resume_process_rows {
+    my ( $self, $session_id ) = @_;
+    return () if !defined $session_id || $session_id eq q{};
+    my %freshest_by_tty;
+    my @rows = sort {
+        ( $a->{etimes} // 1_000_000_000 ) <=> ( $b->{etimes} // 1_000_000_000 )
+          || $b->{pid} <=> $a->{pid}
+    } grep {
+             $_->{cmd}
+          && $_->{cmd} =~ /\bcodex\b/
+          && $_->{cmd} =~ /\bresume\s+\Q$session_id\E(?:\s|\z)/
+          && $_->{tty}
+          && $_->{tty} ne '?'
+    } $self->codex_process_rows;
+    my @stale;
+    for my $row (@rows) {
+        my $pane_id = $self->discover_tmux_pane_for_tty( $row->{tty} );
+        next if !defined $pane_id || $pane_id eq q{};
+        if ( !$freshest_by_tty{ $row->{tty} } ) {
+            $freshest_by_tty{ $row->{tty} } = $row;
+            next;
+        }
+        next if ( $row->{ppid} // 0 ) != 1;
+        push @stale, {
+            %{$row},
+            pane_id => $pane_id,
+        };
+    }
+    return @stale;
+}
+
+sub prune_stale_codex_resume_processes {
+    my ( $self, $session_id, $paths ) = @_;
+    my @stale = $self->stale_codex_resume_process_rows($session_id);
+    my @pruned;
+    for my $row (@stale) {
+        my $pid = $row->{pid};
+        next if !$pid || !$self->pid_is_running($pid);
+        $self->signal_process( 'TERM', $pid );
+        for ( 1 .. 3 ) {
+            last if !$self->pid_is_running($pid);
+            $self->listener_pause_seconds(1);
+        }
+        if ( $self->pid_is_running($pid) ) {
+            $self->signal_process( 'KILL', $pid );
+            for ( 1 .. 2 ) {
+                last if !$self->pid_is_running($pid);
+                $self->listener_pause_seconds(1);
+            }
+        }
+        next if $self->pid_is_running($pid);
+        push @pruned, $pid;
+        $self->append_listener_audit_event(
+            $paths,
+            'codex.resume.pruned',
+            {
+                session_id => $session_id,
+                pid        => $pid,
+                tty        => $row->{tty},
+                pane_id    => $row->{pane_id},
+                cmd        => $row->{cmd},
+            },
+        );
+    }
+    return @pruned;
 }
 
 sub start_listener_if_needed {
@@ -2354,16 +2427,17 @@ sub codex_process_rows {
     if ( $self->{process_list_runner} ) {
         return @{ $self->{process_list_runner}->() || [] };
     }
-    open my $fh, '-|', 'ps', '-eo', 'pid=,tty=,etimes=,args='
+    open my $fh, '-|', 'ps', '-eo', 'pid=,ppid=,tty=,etimes=,args='
       or die "Unable to run ps for codex process discovery: $!"; # uncoverable statement
     my @rows;
     while ( my $line = <$fh> ) {
         chomp $line;
         next if !defined $line || $line eq q{};
-        my ( $pid, $tty, $etimes, $cmd ) = $line =~ /\A\s*(\d+)\s+(\S+)\s+(\d+)\s+(.*)\z/;
+        my ( $pid, $ppid, $tty, $etimes, $cmd ) = $line =~ /\A\s*(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(.*)\z/;
         next if !defined $pid;
         push @rows, {
             pid => 0 + $pid,
+            ppid => defined $ppid ? 0 + $ppid : undef,
             tty => $tty,
             etimes => defined $etimes ? 0 + $etimes : undef,
             cmd => $cmd,
