@@ -453,6 +453,13 @@ sub execute_check_messages {
     );
 
     while (1) {
+        $self->process_tui_live_outbound_transcript(
+            $session_id,
+            $paths,
+            $live_outbound_state,
+            progress_errors => \@progress_errors,
+            reply_errors    => \@reply_errors,
+        );
         my %params = (
             limit   => 20,
             timeout => $poll_timeout,
@@ -2500,8 +2507,8 @@ sub tmux_send_text_to_pane {
     }
     system( 'tmux', 'send-keys', '-t', $pane_id, '-l', '--', $text ) == 0
       or die "Unable to send literal text to tmux pane $pane_id\n"; # uncoverable statement
-    system( 'tmux', 'send-keys', '-t', $pane_id, 'Enter' ) == 0
-      or die "Unable to send Enter to tmux pane $pane_id\n"; # uncoverable statement
+    system( 'tmux', 'send-keys', '-t', $pane_id, 'C-j' ) == 0
+      or die "Unable to submit injected text to tmux pane $pane_id\n"; # uncoverable statement
     return 1;
 }
 

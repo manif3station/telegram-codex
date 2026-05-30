@@ -15,6 +15,16 @@ docker compose -f ~/projects/skills/docker-compose.testing.yml run --rm perl-tes
 
 ## Latest Evidence
 
+- Docker functional gate for `DD-314`:
+  - `Files=6, Tests=692`
+  - `Result: PASS`
+- Docker covered gate for `DD-314`:
+  - `Files=6, Tests=692`
+  - `lib/Telegram/Codex/Manager.pm` statement `100.0`
+  - `lib/Telegram/Codex/Manager.pm` subroutine `100.0`
+- Live bidirectional sync regressions:
+  - live tmux injection now submits Telegram-pasted text with the Codex TUI composer keystroke instead of leaving it stranded in the prompt
+  - collector-owned `check-message` now services the shared TUI transcript before each `getUpdates` poll, so TUI-originated mirroring is not blocked behind a failing Telegram long poll
 - Docker functional gate for `DD-313`:
   - `Files=6, Tests=690`
   - `Result: PASS`

@@ -1,3 +1,11 @@
+0.48 2026-05-30
+    - fixed live Telegram-to-TUI injection by submitting pasted tmux turns
+      with the Codex TUI composer keystroke instead of leaving the Telegram
+      prompt stranded in the live pane
+    - serviced the shared TUI transcript before each `getUpdates` poll so
+      TUI-originated mirroring stays active even when Telegram polling is
+      idle or temporarily failing
+
 0.47 2026-05-24
     - prune stale orphaned duplicate `codex resume <session-id>` processes
       when a collector-owned `check-message` worker starts so long-lived

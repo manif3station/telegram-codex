@@ -44,3 +44,5 @@ Managed media understanding currently splits into two paths:
 Managed reply progress now uses a third path:
 
 - Telegram sees a preserved in-chat verbose trace built from real `codex exec resume --json` agent and command events instead of a generic progress heartbeat
+- live tmux-backed Telegram injection now uses the Codex composer submit keystroke, so pasted Telegram turns are committed into the TUI instead of being left in the prompt buffer
+- shared-transcript mirroring is serviced before each Telegram poll cycle, so TUI-originated outbound mirroring is not blocked behind a transient `getUpdates` failure

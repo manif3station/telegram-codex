@@ -2518,7 +2518,7 @@ SH
     my $home = tempdir( CLEANUP => 1 );
     my $cwd = tempdir( CLEANUP => 1 );
     my $session_id = '019e-unpaired-live-block';
-    my $runtime_dir = File::Spec->catdir( $home, '.telegram-codex', 'skills' );
+    my $runtime_dir = File::Spec->catdir( $home, 'skills' );
     my $session_dir = File::Spec->catdir( $home, '.codex', 'sessions', '2026', '05', '22' );
     make_path($runtime_dir);
     make_path($session_dir);
@@ -4191,6 +4191,31 @@ EOF
 
 {
     my $runtime = tempdir( CLEANUP => 1 );
+    my @call_order;
+    my $manager = new_manager(
+        cwd  => $runtime,
+        home => $runtime,
+        env  => {
+            TELEGRAM_BOT_TOKEN         => 'token-xyz',
+            TELEGRAM_CODEX_RUNTIME_DIR => $runtime,
+            CODEX_SESSION_ID           => 'session-outbound-order',
+        },
+        get_runner => sub {
+            push @call_order, 'getUpdates';
+            die "Telegram GET failed for getUpdates: 500 Status read failed: Connection reset by peer\n";
+        },
+    );
+    local *Telegram::Codex::Manager::process_tui_live_outbound_transcript = sub {
+        push @call_order, 'process_tui';
+        return 0;
+    };
+    my $result = $manager->execute_check_messages( 'skills', 1, 0 );
+    is( scalar @{ $result->{get_errors} }, 1, 'execute_check_messages still records the transient getUpdates failure while polling shared TUI transcript state first' );
+    is_deeply( \@call_order, [ 'process_tui', 'getUpdates' ], 'execute_check_messages services the shared TUI transcript before a failing getUpdates poll' );
+}
+
+{
+    my $runtime = tempdir( CLEANUP => 1 );
     my @get_calls;
     my @post_calls;
     my $manager = new_manager(
@@ -5167,7 +5192,7 @@ EOF
         <$fh>;
     };
     like( $send_log, qr/send-keys\|-t\|%118\|-l\|--\|Remember this code abc:foo\|/, 'tmux_send_text_to_pane sends literal text to the target pane' );
-    like( $send_log, qr/send-keys\|-t\|%118\|Enter\|/, 'tmux_send_text_to_pane sends Enter to submit the injected text' );
+    like( $send_log, qr/send-keys\|-t\|%118\|C-j\|/, 'tmux_send_text_to_pane sends Ctrl-J to submit the injected text into the Codex TUI composer' );
 }
 
 {
